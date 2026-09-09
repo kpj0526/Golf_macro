@@ -1,0 +1,25 @@
+# Build output and runtime binaries
+**/bin/
+**/obj/
+*.exe
+*.dll
+*.pdb
+*.deps.json
+*.runtimeconfig.json
+
+# Local runtime state and account-bearing configuration
+*.dll.config
+booking.dll.config
+golflog.txt
+*golflog.txt
+
+# Generated diagnostic/QA evidence and recovery artifacts
+recovery/build/
+recovery/lib/
+recovery/diagnostics/
+recovery/qa-*/
+recovery/src/decompiled/
+recovery/tests/**/--nologo/
+
+# Local browser tooling
+selenium-manager/

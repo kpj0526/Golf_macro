@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWindowsForms>false</UseWindowsForms>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <LangVersion>14.0</LangVersion>
+    <AssemblyName>FeatureTests</AssemblyName>
+    <RootNamespace>FeatureTests</RootNamespace>
+    <!-- Test the DIAGNOSTIC contract by default -->
+    <DefineConstants>$(DefineConstants);DIAGNOSTIC_BUILD</DefineConstants>
+    <NoWarn>$(NoWarn);CS0108;CS0114;CS0162;CS0164;CS0168;CS0169;CS0219;CS0414;CS0649;CS8321;CS0472;CS1717</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Selenium.WebDriver" Version="4.9.1" />
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="9.0.0" />
+  </ItemGroup>
+
+  <!-- Units under test, compiled directly from the recovery project (pure/testable pieces only). -->
+  <ItemGroup>
+    <Compile Include="..\..\src\booking\TeeSelector.cs" />
+    <Compile Include="..\..\src\booking\bookInfo.cs" />
+    <Compile Include="..\..\src\booking\OpResult.cs" />
+    <Compile Include="..\..\src\booking\BookOutcome.cs" />
+    <Compile Include="..\..\src\booking\BookingDiagnostics.cs" />
+    <Compile Include="..\..\src\booking\ConditionParser.cs" />
+    <Compile Include="..\..\src\booking\SequentialGate.cs" />
+    <Compile Include="..\..\src\booking\CredentialStore.cs" />
+    <Compile Include="..\..\src\booking\SunValleySchedule.cs" />
+  </ItemGroup>
+
+</Project>

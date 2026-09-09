@@ -1,0 +1,133 @@
+Fix: false pre-opening detection in recovered Sun Valley code
+File: recovery/src/booking/sunValley.cs   (only this file changed)
+
+ROOT CAUSE
+  Open/closed was decided solely from the calendar date-cell `title` attribute read from
+  //*[@id='A<yyyymmdd>']/a  (or B<...>), via BookingDiagnostics.Classify():
+      title.Contains("잔여팀")            -> SlotsAvailable
+      title.Contains("마감")              -> Closed
+      title.Contains("오픈전") ...        -> NotOpenYet  -> refresh branch
+      else                                -> Unknown     -> refresh branch
+  Sun Valley served title="오픈전입니다" for a date whose real reserve rows
+  (.btn.btn-res) were already present and bookable, so the macro refreshed past
+  open tee times. The title is advisory, not authoritative; the authoritative signal
+  is the presence of the .btn.btn-res rows the booking flow (find()/compare()) consumes.
+  URL / time-window conditions were not involved. No inference from log text.
+
+CHANGE (minimal): probe the real reserve rows before the pre-opening refresh branch;
+if rows exist, classify OPEN regardless of title. Bounded retries + diagnostic
+no-submit mode unchanged.
+
+--- a/recovery/src/booking/sunValley.cs
++++ b/recovery/src/booking/sunValley.cs
+@@ bookOne(): pre-opening / unknown-title branch
+-			// --- legitimate wait (오픈전) or unrecognised title: bounded refresh only ---
+-			if (state == BookingPageState.NotOpenYet || state == BookingPageState.Unknown)
+-			{
+-				refreshCount++;
+-				TimeSpan elapsed = DateTime.Now - start;
+-				if (refreshCount == 1 && state == BookingPageState.Unknown)
+-				{
+-					BookingDiagnostics.Capture(drv, diagnosticsDir, "unknown-cell-state",
+-						"title=\"" + lastTitle + "\" is not one of 잔여팀 / 마감 / 오픈전 on url=" + lastUrl);
+-				}
+-				if (refreshCount > maxRefresh || elapsed > maxWait)
+-				{
+-					string note = BookingDiagnostics.Capture(drv, diagnosticsDir, "refresh-limit",
+-						"state=" + state + " title=\"" + lastTitle + "\" refreshCount=" + refreshCount + "/" + maxRefresh +
+-						" elapsed=" + (int)elapsed.TotalSeconds + "s/" + (int)maxWait.TotalSeconds + "s url=" + lastUrl);
+-					frm.logtxtBox("T # " + threadIndex + " STOP: gave up waiting (" + state + "). last title=\"" + lastTitle +
+-						"\" after " + refreshCount + " refresh / " + (int)elapsed.TotalSeconds + "s.  evidence=" + note);
+-					workPool.finishDay(num);
+-					return OpResult.Fail;
+-				}
+-				frm.logtxtBox("T # " + threadIndex + " refresh " + refreshCount + "/" + maxRefresh + "  state=" + state + " title=\"" + lastTitle + "\"");
+-				Thread.Sleep(refreshDelayMs);
+-				((WebDriver)drv).Navigate().GoToUrl(clubs[bookInfo2.course]);
+-				continue;
+-			}
+-
+-			// --- state == SlotsAvailable ---
+-			try
+-			{
+-				target = dateCell;
+-				WebDriverExtensions.clickLock(dateCell);
++			// --- cell 'title' claims pre-opening, or is unrecognised ---
++			// The date-cell title is NOT authoritative: Sun Valley has been observed serving
++			// title="오픈전입니다" while real bookable tee-off rows were already present. Probe the
++			// actual reserve rows (.btn.btn-res) before taking the pre-opening refresh branch.
++			bool cellOpened = false;
++			if (state == BookingPageState.NotOpenYet || state == BookingPageState.Unknown)
++			{
++				ReadOnlyCollection<IWebElement> probeRows = ProbeTeeRows(dateCell);
++				cellOpened = true;
++				if (probeRows != null && probeRows.Count > 0)
++				{
++					frm.logtxtBox("T # " + threadIndex + " cell title=\"" + lastTitle + "\" but " + probeRows.Count +
++						" tee row(s) present -> treating as OPEN (title not authoritative)");
++					state = BookingPageState.SlotsAvailable;
++					// fall through to the SlotsAvailable handler below
++				}
++				else
++				{
++					refreshCount++;
++					TimeSpan elapsed = DateTime.Now - start;
++					if (refreshCount == 1 && state == BookingPageState.Unknown)
++					{
++						BookingDiagnostics.Capture(drv, diagnosticsDir, "unknown-cell-state",
++							"title=\"" + lastTitle + "\" is not 잔여팀 / 마감 / 오픈전 and no .btn.btn-res rows on url=" + lastUrl);
++					}
++					if (refreshCount > maxRefresh || elapsed > maxWait)
++					{
++						string note = BookingDiagnostics.Capture(drv, diagnosticsDir, "refresh-limit",
++							"state=" + state + " title=\"" + lastTitle + "\" (no tee rows) refreshCount=" + refreshCount + "/" + maxRefresh +
++							" elapsed=" + (int)elapsed.TotalSeconds + "s/" + (int)maxWait.TotalSeconds + "s url=" + lastUrl);
++						frm.logtxtBox("T # " + threadIndex + " STOP: gave up waiting (" + state + ", no tee rows). last title=\"" + lastTitle +
++							"\" after " + refreshCount + " refresh / " + (int)elapsed.TotalSeconds + "s.  evidence=" + note);
++						workPool.finishDay(num);
++						return OpResult.Fail;
++					}
++					frm.logtxtBox("T # " + threadIndex + " refresh " + refreshCount + "/" + maxRefresh + "  state=" + state + " title=\"" + lastTitle + "\" (no tee rows yet)");
++					Thread.Sleep(refreshDelayMs);
++					((WebDriver)drv).Navigate().GoToUrl(clubs[bookInfo2.course]);
++					continue;
++				}
++			}
++
++			// --- state == SlotsAvailable ---
++			try
++			{
++				target = dateCell;
++				if (!cellOpened)
++				{
++					WebDriverExtensions.clickLock(dateCell);
++				}
+@@ bookOne(): SlotsAvailable, no-rows capture message
+-					BookingDiagnostics.Capture(drv, diagnosticsDir, "no-tee-buttons",
+-						"date cell reported 잔여팀 but no '.btn.btn-res' rows. url=" + BookingDiagnostics.SafeUrl((IWebDriver)(object)drv));
++					BookingDiagnostics.Capture(drv, diagnosticsDir, "no-tee-buttons",
++						"no '.btn.btn-res' rows after opening date (title=\"" + lastTitle + "\"). url=" + BookingDiagnostics.SafeUrl((IWebDriver)(object)drv));
+@@ new helper, placed after handleAlert()
++	// Recovery: authoritative "is this date actually open" signal.
++	// Opens the date cell and returns the real reserve rows (.btn.btn-res) the booking
++	// flow consumes. Used to override a stale / misleading cell title (e.g. "오픈전입니다")
++	// before the pre-opening refresh branch runs.
++	private ReadOnlyCollection<IWebElement> ProbeTeeRows(IWebElement dateCell)
++	{
++		try
++		{
++			if (dateCell != null)
++			{
++				try { WebDriverExtensions.clickLock(dateCell); } catch (Exception) { }
++				Thread.Sleep(50);
++			}
++			return ((IWebDriver)(object)drv).FindElements(By.XPath("//*[@class='btn btn-res']"), 2);
++		}
++		catch (Exception) { return null; }
++	}
+
+NET EFFECT
+  Pre-opening refresh now happens ONLY when 0 real .btn.btn-res rows exist for the date.
+  Any date with real reservable rows is detected as OPEN and proceeds to slot matching
+  (find/compare), even if the calendar cell title still says 오픈전입니다.
+  maxRefresh / maxWaitSeconds caps and diagnosticMode (tryReserve compiled out) unchanged.
