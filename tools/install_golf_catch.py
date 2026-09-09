@@ -8,6 +8,7 @@ reads, uploads, or creates account credentials.
 from __future__ import annotations
 
 import argparse
+from datetime import datetime
 import json
 import os
 from pathlib import Path
@@ -70,9 +71,20 @@ def main() -> None:
         staging.mkdir()
         safe_extract(archive, staging)
 
+        backup = None
         if destination.exists():
-            shutil.rmtree(destination)
-        shutil.move(str(staging), str(destination))
+            # Keep the prior install recoverable. Credentials live in a separate
+            # DPAPI store and are not part of either directory.
+            backup = destination.with_name(
+                f"{destination.name}.backup-{datetime.now():%Y%m%d%H%M%S}"
+            )
+            destination.rename(backup)
+        try:
+            shutil.move(str(staging), str(destination))
+        except Exception:
+            if backup is not None and backup.exists() and not destination.exists():
+                backup.rename(destination)
+            raise
 
     executable = destination / "booking.exe"
     if not executable.is_file():
