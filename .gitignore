@@ -23,3 +23,7 @@ recovery/tests/**/--nologo/
 
 # Local browser tooling
 selenium-manager/
+
+# Python installer bytecode
+__pycache__/
+*.pyc
