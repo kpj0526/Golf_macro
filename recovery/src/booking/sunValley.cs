@@ -127,6 +127,47 @@ internal class sunValley : club
 		return true;
 	}
 
+	public override bool prepareReservation2Session(Form1 _frm, bool sameAccount)
+	{
+		frm = _frm;
+		if (sameAccount)
+		{
+			frm.logtxtBox("예약 2: 예약 1과 같은 계정이므로 기존 로그인 세션을 재사용합니다.");
+			return true;
+		}
+
+		try
+		{
+			IWebDriver driver2 = (IWebDriver)(object)drv;
+			// The header control is not consistently an anchor/button, but the site
+			// itself wires #fnLogOut to this endpoint.  Use the endpoint directly so
+			// the server invalidates its session (deleting browser cookies alone does
+			// not do that).
+			frm.logtxtBox("예약 2: 기존 계정의 서버 로그아웃을 실행합니다.");
+			((WebDriver)drv).Navigate().GoToUrl("https://www.sunvalley.co.kr/member/logout");
+			((WebDriver)drv).Navigate().GoToUrl(LoginUrl());
+			for (int attempt = 0; attempt < 20; attempt++)
+			{
+				if (driver2.FindElements(By.Id("usrId")).Count > 0 && driver2.FindElements(By.Id("usrPwd")).Count > 0)
+				{
+					frm.logtxtBox("예약 2: 로그인 폼 확인 완료.");
+					return true;
+				}
+				Thread.Sleep(250);
+			}
+			string url = BookingDiagnostics.SafeUrl(driver2);
+			frm.logtxtBox("예약 2 세션 전환 실패: 로그아웃 후 로그인 폼이 표시되지 않았습니다. url=" + url);
+			BookingDiagnostics.Capture(drv, diagnosticsDir, "reservation2-login-form-missing", "url=" + url);
+			return false;
+		}
+		catch (Exception ex)
+		{
+			frm.logtxtBox("예약 2 세션 전환 오류: " + ex.GetType().Name + " - " + ex.Message);
+			BookingDiagnostics.Capture(drv, diagnosticsDir, "reservation2-session-switch-error", ex.ToString());
+			return false;
+		}
+	}
+
 	private string LoginUrl()
 	{
 		return dummyTestMode ? dummyBaseUrl + "/login.html" : loginUrl;

@@ -25,7 +25,7 @@ internal static class Program
 		Section("3. Two-condition parsing / fixed-slot rules (ConditionParser)");
 		ConditionParserTests();
 
-		Section("4. Sequential condition-1 gate (SequentialGate + BookOutcome)");
+		Section("4. Sequential condition-2 continuation policy (SequentialGate + BookOutcome)");
 		SequentialGateTests();
 
 		Section("5. Diagnostic no-submit contract (BookOutcome under DIAGNOSTIC_BUILD)");
@@ -236,13 +236,15 @@ internal static class Program
 		var notSubmitted = new BookOutcome { Result = OpResult.FoundSlot, SlotFound = true, Submitted = false };
 		var noSlot = new BookOutcome { Result = OpResult.NoProperTime, SlotFound = false };
 		var redirected = new BookOutcome { Result = OpResult.FalalError, SlotFound = false, Detail = "redirected away" };
+		var browserFailure = new BookOutcome { Result = OpResult.Fail, SlotFound = false, Detail = "navigation error" };
 
 		Expect("confirmed -> condition 2 RUNS", SequentialGate.ShouldRunCondition2(confirmed), "");
-		Expect("submitted but no confirmation id -> condition 2 SKIPPED", !SequentialGate.ShouldRunCondition2(noId), "");
-		Expect("submitted + id but not in history -> condition 2 SKIPPED", !SequentialGate.ShouldRunCondition2(notInHistory), "");
-		Expect("slot found but not submitted (diagnostic) -> condition 2 SKIPPED", !SequentialGate.ShouldRunCondition2(notSubmitted), "");
-		Expect("no matching slot -> condition 2 SKIPPED", !SequentialGate.ShouldRunCondition2(noSlot), "");
+		Expect("submitted but no confirmation id -> condition 2 RUNS", SequentialGate.ShouldRunCondition2(noId), "");
+		Expect("submitted + id but not in history -> condition 2 RUNS", SequentialGate.ShouldRunCondition2(notInHistory), "");
+		Expect("slot found but not submitted (diagnostic) -> condition 2 RUNS", SequentialGate.ShouldRunCondition2(notSubmitted), "");
+		Expect("no matching slot -> condition 2 RUNS", SequentialGate.ShouldRunCondition2(noSlot), "");
 		Expect("redirected / fatal -> condition 2 SKIPPED", !SequentialGate.ShouldRunCondition2(redirected), "");
+		Expect("browser/navigation failure -> condition 2 SKIPPED", !SequentialGate.ShouldRunCondition2(browserFailure), "");
 		Expect("null outcome -> condition 2 SKIPPED", !SequentialGate.ShouldRunCondition2(null), "");
 
 		Expect("BookOutcome.GateSatisfied only when submitted+id+history", confirmed.GateSatisfied && !noId.GateSatisfied && !notInHistory.GateSatisfied, "");
@@ -250,19 +252,19 @@ internal static class Program
 		Expect("GateReason(real) explains missing confirmation id", noId.GateReason(false).Contains("no server confirmation ID"), noId.GateReason(false));
 		Expect("GateReason(real) explains not-in-history", notInHistory.GateReason(false).Contains("reservation history"), notInHistory.GateReason(false));
 		Expect("Decision(confirmed) says starting Condition 2", SequentialGate.Decision(confirmed, false).Contains("starting Condition 2"), "");
-		Expect("Decision(noSlot) says SKIPPED + terminated", SequentialGate.Decision(noSlot, false).Contains("SKIPPED") && SequentialGate.Decision(noSlot, false).Contains("terminated"), "");
+		Expect("Decision(noSlot) says starting Condition 2", SequentialGate.Decision(noSlot, false).Contains("starting Condition 2"), "");
 	}
 
 	// ---------------------------------------------------------------- group 5
 	private static void DiagnosticNoSubmitTests()
 	{
 		// In a DIAGNOSTIC build the booking path never sets Submitted=true, so the gate
-		// can never open -> condition 2 is always skipped. Model that here.
+		// Diagnostic mode does not submit, but it must still check condition 2.
 		var diagOutcome = new BookOutcome { Result = OpResult.FoundSlot, SlotFound = true, ChosenTee = "08:50", DeltaMinutes = 10, Submitted = false, ConfirmationId = null, HistoryVerified = false };
 		Expect("diagnostic outcome: slot found", diagOutcome.SlotFound, "");
 		Expect("diagnostic outcome: NOT submitted", !diagOutcome.Submitted, "");
 		Expect("diagnostic outcome: gate NOT satisfied", !diagOutcome.GateSatisfied, "");
-		Expect("diagnostic outcome: condition 2 will NOT run", !SequentialGate.ShouldRunCondition2(diagOutcome), "");
+		Expect("diagnostic outcome: condition 2 will run", SequentialGate.ShouldRunCondition2(diagOutcome), "");
 		Expect("diagnostic gate reason names diagnostic no-submit", diagOutcome.GateReason(true).Contains("diagnostic no-submit"), diagOutcome.GateReason(true));
 
 #if DIAGNOSTIC_BUILD

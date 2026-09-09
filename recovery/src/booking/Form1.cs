@@ -599,7 +599,7 @@ public class Form1 : Form
 			bookInfo c2 = ParseCondition(ConditionString(2));
 			bookList.Add(c2);
 			logtxtBox("예약 2 티타임 범위 " + Hhmm(SlotStart(2)) + " ~ " + Hhmm(SlotEnd(2))
-				+ " - 예약 1 확정(서버 확인 ID + 예약내역) 후 순차 진행.");
+				+ " - 예약 1 결과와 관계없이(브라우저/페이지 오류 제외) 순차 진행.");
 		}
 
 		SaveConditions();
@@ -869,6 +869,7 @@ public class Form1 : Form
 		if (!SequentialGate.ShouldRunCondition2(o1))
 		{
 			logtxtBox("==> 예약 2 건너뜀. 실행 종료 (예약 1 브라우저/페이지 오류).");
+			logtxtBox(SummarizeRun(o1, null, null));
 			SafeQuit(val);
 			return false;
 		}
@@ -876,6 +877,7 @@ public class Form1 : Form
 		if (bookList.Count < 2 || stopClicked)
 		{
 			logtxtBox("예약 2 없음. 실행 완료.");
+			logtxtBox(SummarizeRun(o1, null, stopClicked ? "사용자가 실행을 중지함" : null));
 			SafeQuit(val);
 			return true;
 		}
@@ -889,17 +891,31 @@ public class Form1 : Form
 		{
 		}
 
-		// 예약 2는 예약 2에 선택된 계정 슬롯으로 새 탭에서 재로그인.
+		// The two tabs share browser cookies.  Reuse a same-account session; otherwise
+		// explicitly leave it and verify a fresh login form before signing in.
+		int r1slot = coreData.accounts.ClampSlot(coreData.accounts.Res1Slot);
 		int r2slot = coreData.accounts.ClampSlot(coreData.accounts.Res2Slot);
-		coreData.applyAccount(r2slot);
-		client.id = coreData.userId;
-		client.pwd = coreData.passwd;
-		logtxtBox("예약 2 계정 " + (r2slot + 1) + " 로 재로그인");
-		if (!client.login(this))
+		bool sameAccount = r1slot == r2slot;
+		if (!client.prepareReservation2Session(this, sameAccount))
 		{
-			logtxtBox("예약 2 로그인 실패. 실행 종료.");
+			logtxtBox("예약 2 세션 전환 실패. 실행 종료.");
+			logtxtBox(SummarizeRun(o1, null, "예약 2 세션 전환 실패"));
 			SafeQuit(val);
 			return false;
+		}
+		if (!sameAccount)
+		{
+			coreData.applyAccount(r2slot);
+			client.id = coreData.userId;
+			client.pwd = coreData.passwd;
+			logtxtBox("예약 2 계정 " + (r2slot + 1) + " 로 로그인");
+			if (!client.login(this))
+			{
+				logtxtBox("예약 2 로그인 실패. 실행 종료.");
+				logtxtBox(SummarizeRun(o1, null, "예약 2 로그인 실패"));
+				SafeQuit(val);
+				return false;
+			}
 		}
 
 		logtxtBox("========== 예약 2 ==========  " + bookList[1]);
@@ -908,6 +924,7 @@ public class Form1 : Form
 		logtxtBox(o2.GateSatisfied
 			? ("예약 2 확정 (confirmationId=" + o2.ConfirmationId + ").")
 			: ("예약 2 미확정: " + o2.GateReason(client.diagnosticMode) + "."));
+		logtxtBox(SummarizeRun(o1, o2, null));
 		logtxtBox("실행 완료.");
 		SafeQuit(val);
 		return true;
@@ -922,6 +939,47 @@ public class Form1 : Form
 			+ " confirmationId=" + (o.ConfirmationId ?? "(none)")
 			+ " historyVerified=" + o.HistoryVerified
 			+ ((o.Detail != null) ? ("  detail=" + o.Detail) : "");
+	}
+
+	private static bool IsInfrastructureError(BookOutcome outcome)
+	{
+		return outcome == null || outcome.Result == OpResult.Fail || outcome.Result == OpResult.FalalError;
+	}
+
+	private static string OutcomeSummary(int number, BookOutcome outcome)
+	{
+		if (outcome == null)
+		{
+			return "예약 " + number + " 결과 없음";
+		}
+		return "예약 " + number + "=" + outcome.Result
+			+ (string.IsNullOrEmpty(outcome.Detail) ? "" : " (" + outcome.Detail + ")");
+	}
+
+	// The final line is intentionally a user-facing result, not merely a control-flow
+	// decision.  It makes closed dates, no available times, and actual browser errors
+	// distinguishable in the log without reading the preceding Selenium detail.
+	private static string SummarizeRun(BookOutcome o1, BookOutcome o2, string infrastructureError)
+	{
+		if (!string.IsNullOrEmpty(infrastructureError))
+		{
+			return "실행 요약: 오류 - " + infrastructureError + ". " + OutcomeSummary(1, o1);
+		}
+		if (IsInfrastructureError(o1) || (o2 != null && IsInfrastructureError(o2)))
+		{
+			return "실행 요약: 오류 - " + OutcomeSummary(1, o1)
+				+ (o2 == null ? "" : ", " + OutcomeSummary(2, o2));
+		}
+		if (o1 != null && o2 != null && o1.Result == OpResult.Overbook && o2.Result == OpResult.Overbook)
+		{
+			return "실행 요약: 모두 마감 - 두 예약 대상 날짜에 예약 가능한 티타임이 없습니다.";
+		}
+		if (o1 != null && o2 != null && o1.Result == OpResult.NotOpen && o2.Result == OpResult.NotOpen)
+		{
+			return "실행 요약: 모두 오픈 전 - 인접 날짜는 탐색하지 않았습니다.";
+		}
+		return "실행 요약: " + OutcomeSummary(1, o1)
+			+ (o2 == null ? "" : ", " + OutcomeSummary(2, o2));
 	}
 
 	private void SafeQuit(ChromeDriver d)

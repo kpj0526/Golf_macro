@@ -77,6 +77,15 @@ internal abstract class club
 	public abstract bool login(Form1 frm);
 
 	/// <summary>
+	/// Prepares the browser session for reservation 2.  The same account reuses its
+	/// authenticated session; a different account must first leave that session.
+	/// </summary>
+	public virtual bool prepareReservation2Session(Form1 frm, bool sameAccount)
+	{
+		return sameAccount;
+	}
+
+	/// <summary>
 	/// Recovery feature: book one explicit request and report a rich outcome
 	/// (nearest-time selection + submit + confirmation-id + history verification).
 	/// Used by the sequential two-condition orchestrator. Only sunValley implements it.
