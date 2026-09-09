@@ -1,5 +1,7 @@
 # 고객용 설치 안내
 
+다운로드: <https://github.com/kpj0526/GolfCatch-download/releases/latest>
+
 ## 가장 쉬운 방법
 
 1. GitHub Releases에서 `GolfCatch-win-x64.zip`을 내려받습니다.
@@ -11,13 +13,13 @@
 
 ## Python 설치 도우미
 
-Python이 설치되어 있다면 저장소 최상단에서 아래 한 줄만 실행하면 최신 고객용 ZIP을 받아 `%LOCALAPPDATA%\GolfCatch`에 설치합니다.
+Python이 설치되어 있다면 저장소 최상단에서 아래 한 줄만 실행하면 최신 고객용 ZIP을 받아 `%LOCALAPPDATA%\GolfCatch\app`에 설치합니다.
 
 ```powershell
 py tools\install_golf_catch.py
 ```
 
-기존 설치본이 있으면 삭제하지 않고, 같은 위치에 시간표시 백업 폴더를 만든 뒤 새 버전을 설치합니다.
+기존 설치본이 있으면 삭제하지 않고, 같은 위치에 시간표시 백업 폴더를 만든 뒤 새 버전을 설치합니다. 계정 저장 파일은 상위 `GolfCatch` 폴더에 따로 보관되므로 업데이트해도 유지됩니다.
 
 ## 포함 파일
 

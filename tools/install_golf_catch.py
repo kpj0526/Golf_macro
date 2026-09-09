@@ -18,7 +18,9 @@ import urllib.request
 import zipfile
 
 
-REPOSITORY = "kpj0526/Golf_macro"
+# Public, release-only repository. The private source repository is never exposed
+# to customers by the installer.
+REPOSITORY = "kpj0526/GolfCatch-download"
 ASSET_NAME = "GolfCatch-win-x64.zip"
 API_URL = f"https://api.github.com/repos/{REPOSITORY}/releases/latest"
 
@@ -52,7 +54,9 @@ def safe_extract(archive: Path, destination: Path) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Golf Catch 최신 릴리스 설치")
-    default_dir = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "GolfCatch"
+    # Keep the executable separate from %LOCALAPPDATA%\GolfCatch\pw.dat,
+    # the application's DPAPI-protected credential store.
+    default_dir = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "GolfCatch" / "app"
     parser.add_argument("--install-dir", type=Path, default=default_dir, help="설치 폴더")
     args = parser.parse_args()
 
