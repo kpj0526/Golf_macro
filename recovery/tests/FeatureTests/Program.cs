@@ -4,6 +4,7 @@ using System.Collections.ObjectModel;
 using System.Drawing;
 using System.IO;
 using System.Linq;
+using Microsoft.Win32;
 using OpenQA.Selenium;
 using booking;
 
@@ -40,9 +41,55 @@ internal static class Program
 		Section("8. Reservation-history fallback confirmation match (ReservationHistoryMatch)");
 		ReservationHistoryMatchTests();
 
+		Section("9. Legacy Windows-login auto-run cleanup (HKCU Run value removal only)");
+		LegacyAutoRunCleanupTests();
+
 		Console.WriteLine();
 		Console.WriteLine("================ " + _pass + " passed, " + _fail + " failed ================");
 		Environment.Exit(_fail == 0 ? 0 : 1);
+	}
+
+	// ---------------------------------------------------------------- group 9
+	// Real HKCU access, but confined to a throwaway "Software\GolfCatchTest_<guid>"
+	// subtree that is deleted in the finally block. Never touches the real Run key.
+	private static void LegacyAutoRunCleanupTests()
+	{
+		string baseName = "Software\\GolfCatchTest_" + Guid.NewGuid().ToString("N");
+		string runPath = baseName + "\\Run";
+		try
+		{
+			// A) stale value present -> deleted; unrelated values untouched; nothing created
+			using (RegistryKey k = Registry.CurrentUser.CreateSubKey(runPath))
+			{
+				k.SetValue(LegacyAutoRunCleanup.LegacyValueName, "\"C:\\old\\booking.exe\" --auto-run", RegistryValueKind.String);
+				k.SetValue("SomeOtherApp", "keep me", RegistryValueKind.String);
+			}
+			bool removed = LegacyAutoRunCleanup.Run(runPath);
+			using (RegistryKey k = Registry.CurrentUser.OpenSubKey(runPath))
+			{
+				Expect("stale GolfCatchBooking value is deleted",
+					removed && k != null && k.GetValue(LegacyAutoRunCleanup.LegacyValueName) == null,
+					"removed=" + removed);
+				Expect("unrelated Run values are left intact",
+					k != null && (string)k.GetValue("SomeOtherApp") == "keep me", "");
+				Expect("no new value was created",
+					k != null && k.GetValueNames().Length == 1,
+					"names=" + (k == null ? "(null)" : string.Join(",", k.GetValueNames())));
+			}
+
+			// B) run again -> nothing to do
+			Expect("second run reports nothing removed", !LegacyAutoRunCleanup.Run(runPath), "");
+
+			// C) missing Run key -> false, and the key is NOT materialised
+			string missingPath = baseName + "\\NoSuchRun";
+			bool r = LegacyAutoRunCleanup.Run(missingPath);
+			using RegistryKey mk = Registry.CurrentUser.OpenSubKey(missingPath);
+			Expect("missing key -> false and key not created", !r && mk == null, "r=" + r + " keyExists=" + (mk != null));
+		}
+		finally
+		{
+			try { Registry.CurrentUser.DeleteSubKeyTree(baseName, throwOnMissingSubKey: false); } catch { }
+		}
 	}
 
 	// ---------------------------------------------------------------- group 7

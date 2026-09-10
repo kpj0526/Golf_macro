@@ -14,6 +14,12 @@ internal static class Program
 			if (string.Equals(arg, "--qa-auto-start", StringComparison.OrdinalIgnoreCase))
 				qaAutoStart = true;
 		}
+
+		// One-time migration: delete a stale "Windows 로그인 후 자동 실행" (HKCU\...\Run
+		// "GolfCatchBooking") entry left by a build that still had the feature.
+		// Creates nothing and does not re-enable auto-run.
+		LegacyAutoRunCleanup.Run();
+
 		Application.SetHighDpiMode(HighDpiMode.SystemAware);
 		Application.EnableVisualStyles();
 		Application.SetCompatibleTextRenderingDefault(defaultValue: false);

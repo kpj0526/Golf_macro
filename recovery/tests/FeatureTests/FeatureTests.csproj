@@ -31,6 +31,7 @@
     <Compile Include="..\..\src\booking\SequentialGate.cs" />
     <Compile Include="..\..\src\booking\CredentialStore.cs" />
     <Compile Include="..\..\src\booking\SunValleySchedule.cs" />
+    <Compile Include="..\..\src\booking\LegacyAutoRunCleanup.cs" />
   </ItemGroup>
 
 </Project>
