@@ -49,19 +49,19 @@ internal static class Program
 	private static void SunValleyScheduleTests()
 	{
 		// Tue 2026-06-23 belongs to the week beginning Mon 2026-06-22.
-		Schedule("Seorak weekday", 0, "20260623", new DateTime(2026, 6, 8, 9, 1, 0));
-		Schedule("Iljuk weekday", 1, "20260623", new DateTime(2026, 6, 8, 9, 31, 0));
-		Schedule("Dongwon weekday", 2, "20260623", new DateTime(2026, 6, 8, 10, 1, 0));
+		Schedule("Seorak weekday", 0, "20260623", new DateTime(2026, 6, 8, 9, 0, 0));
+		Schedule("Iljuk weekday", 1, "20260623", new DateTime(2026, 6, 8, 9, 30, 0));
+		Schedule("Dongwon weekday", 2, "20260623", new DateTime(2026, 6, 8, 10, 0, 0));
 
 		// Sat 2026-06-27 uses Fri 2026-06-12 for Iljuk/Dongwon.
-		Schedule("Seorak weekend still Monday", 0, "20260627", new DateTime(2026, 6, 8, 9, 1, 0));
-		Schedule("Iljuk weekend Friday", 1, "20260627", new DateTime(2026, 6, 12, 9, 31, 0));
-		Schedule("Dongwon weekend Friday", 2, "20260627", new DateTime(2026, 6, 12, 10, 1, 0));
+		Schedule("Seorak weekend still Monday", 0, "20260627", new DateTime(2026, 6, 8, 9, 0, 0));
+		Schedule("Iljuk weekend Friday", 1, "20260627", new DateTime(2026, 6, 12, 9, 30, 0));
+		Schedule("Dongwon weekend Friday", 2, "20260627", new DateTime(2026, 6, 12, 10, 0, 0));
 
 		var unknown = new bookInfo(3, "NA", 0, "20260623", 900, 1000, 900);
 		Expect("Yeoju has no assumed schedule", !SunValleySchedule.TryGetSingleCheckTime(unknown, out _, out _), "");
 
-		DateTime at = new DateTime(2026, 6, 8, 9, 1, 0);
+		DateTime at = new DateTime(2026, 6, 8, 9, 0, 0);
 		Expect("before check time waits", SunValleySchedule.WaitRequired(at.AddSeconds(-1), at), "");
 		Expect("at check time proceeds immediately", !SunValleySchedule.WaitRequired(at, at), "");
 		Expect("after check time proceeds immediately", !SunValleySchedule.WaitRequired(at.AddMinutes(5), at), "");

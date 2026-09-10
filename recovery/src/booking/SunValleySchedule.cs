@@ -38,8 +38,8 @@ internal static class SunValleySchedule
 			return false;
 		}
 
-		// Relaxed operator policy: one calendar load one minute after the opening.
-		checkAt = openAt.AddMinutes(1);
+		// Check at the club's published opening time, with no intentional delay.
+		checkAt = openAt;
 		return true;
 	}
 
