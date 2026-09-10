@@ -29,6 +29,8 @@ internal class sunValley : club
 	private const int LoginCompletionTimeoutSeconds = 60;
 	private const int ReservationPageTimeoutSeconds = 45;
 	private const int ConfirmationDialogTimeoutSeconds = 20;
+	private const int PageContentTimeoutSeconds = 20;
+	private const int CompletionAlertTimeoutSeconds = 20;
 
 	private string[] clubs = new string[4] { "https://www.sunvalley.co.kr/reservation/golf?sel=J21", "https://www.sunvalley.co.kr/reservation/golf?sel=J23", "https://www.sunvalley.co.kr/reservation/golf?sel=J24", "https://www.sunvalley.co.kr/reservation/golf?sel=J25" };
 
@@ -264,6 +266,50 @@ internal class sunValley : club
 		BookingDiagnostics.Capture(drv, diagnosticsDir, kind, "reason=" + reason + " url=" + url);
 	}
 
+	// Wait for a replacement page to contain real HTML instead of assuming a fixed
+	// browser-rendering time.  This is used after history-page navigation.
+	private bool WaitForPageContent(IWebDriver driver2, int timeoutSeconds, out string page)
+	{
+		page = "";
+		DateTime deadline = DateTime.Now.AddSeconds(timeoutSeconds);
+		while (!frm.stopClicked && DateTime.Now < deadline)
+		{
+			try
+			{
+				page = driver2.PageSource ?? "";
+				if (page.Length >= 100)
+					return true;
+			}
+			catch (Exception)
+			{
+				// The navigation may still be replacing the document.
+			}
+			Thread.Sleep(150);
+		}
+		return false;
+	}
+
+	// Wait for a server response alert.  It deliberately does not accept the alert;
+	// the existing result handling below remains responsible for that decision.
+	private bool WaitForAlert(int timeoutSeconds)
+	{
+		IWebDriver driver2 = (IWebDriver)(object)drv;
+		DateTime deadline = DateTime.Now.AddSeconds(timeoutSeconds);
+		while (!frm.stopClicked && DateTime.Now < deadline)
+		{
+			try
+			{
+				driver2.SwitchTo().Alert();
+				return true;
+			}
+			catch (NoAlertPresentException)
+			{
+				Thread.Sleep(150);
+			}
+		}
+		return false;
+	}
+
 	public override bool prepareReservation2Session(Form1 _frm, bool sameAccount)
 	{
 		frm = _frm;
@@ -395,9 +441,8 @@ internal class sunValley : club
 				catch (Exception)
 				{
 				}
-				Thread.Sleep(50);
 			}
-			return ((IWebDriver)(object)drv).FindElements(By.XPath("//*[@class='btn btn-res']"), 2);
+			return ((IWebDriver)(object)drv).FindElements(By.XPath("//*[@class='btn btn-res']"), 10);
 		}
 		catch (Exception)
 		{
@@ -608,10 +653,6 @@ internal class sunValley : club
 				{
 					WebDriverExtensions.clickLock(dateCell);
 				}
-				if (bookInfo2.course > 0)
-				{
-					Thread.Sleep(50);
-				}
 				ReadOnlyCollection<IWebElement> teeButtons = ((IWebDriver)(object)drv).FindElements(By.XPath("//*[@class='btn btn-res']"), 10);
 				if (teeButtons == null || teeButtons.Count == 0)
 				{
@@ -740,8 +781,8 @@ internal class sunValley : club
 		try
 		{
 			((WebDriver)drv).Navigate().GoToUrl(url);
-			Thread.Sleep(800);
-			string page = ((IWebDriver)(object)drv).PageSource ?? "";
+			if (!WaitForPageContent((IWebDriver)(object)drv, PageContentTimeoutSeconds, out string page))
+				frm.logtxtBox("T # " + threadIndex + " reservation-history page did not finish loading within " + PageContentTimeoutSeconds + "s.");
 			string d = req.date;
 			string dDash = d.Substring(0, 4) + "-" + d.Substring(4, 2) + "-" + d.Substring(6, 2);
 			string dDot = d.Substring(0, 4) + "." + d.Substring(4, 2) + "." + d.Substring(6, 2);
@@ -776,7 +817,6 @@ internal class sunValley : club
 		try
 		{
 			((WebDriver)drv).ExecuteScript("arguments[0].click();", new object[1] { btn });
-			Thread.Sleep(100);
 			frm.logtxtBox("T # " + threadIndex + " submit button clicked");
 			IWebElement val = ((IWebDriver)(object)drv).FindElement(By.XPath("//*[@id='golfTimeDiv2']/div[3]/div/div[1]/button"), ConfirmationDialogTimeoutSeconds);
 			if (val == null)
@@ -790,13 +830,12 @@ internal class sunValley : club
 			{
 				WebDriverExtensions.clickLock(val);
 				frm.logtxtBox("T # " + threadIndex + " reserve button clicked " + DateTime.Now.ToString("HH:mm:ss.ffffff"));
-				Thread.Sleep(300);
+				WaitForAlert(CompletionAlertTimeoutSeconds);
 				string text;
 				try
 				{
 					text = ((WebDriver)drv).SwitchTo().Alert().Text;
 					((WebDriver)drv).SwitchTo().Alert().Accept();
-					Thread.Sleep(30);
 				}
 				catch (Exception alertEx)
 				{
