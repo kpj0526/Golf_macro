@@ -15,6 +15,11 @@ internal class sunValley : club
 
 	private string lastConfirmationId;
 
+	// Set true only when ConfirmViaHistory matched the reservation on the history page with
+	// the STRICT criterion (date + tee time + course + starter). BookCore then keeps
+	// HistoryVerified = true without re-running the weaker VerifyReservationHistory check.
+	private bool lastHistoryStrictConfirmed;
+
 	private const string loginUrl = "https://www.sunvalley.co.kr/member/login?returnURL=/reservation/golf";
 
 	private string[] clubs = new string[4] { "https://www.sunvalley.co.kr/reservation/golf?sel=J21", "https://www.sunvalley.co.kr/reservation/golf?sel=J23", "https://www.sunvalley.co.kr/reservation/golf?sel=J24", "https://www.sunvalley.co.kr/reservation/golf?sel=J25" };
@@ -519,7 +524,8 @@ internal class sunValley : club
 				// --- real submission path (only in a non-diagnostic build) ---
 				frm.logtxtBox("T # " + threadIndex + " submitting nearest slot " + chosenHHmm + " (deltaMin=" + deltaMin + ")");
 				lastConfirmationId = null;
-				OpResult submitResult = tryReserve(slot);
+				lastHistoryStrictConfirmed = false;
+				OpResult submitResult = tryReserve(slot, bookInfo2, chosenHHmm);
 				outcome.Result = submitResult;
 				outcome.Submitted = true;
 
@@ -532,7 +538,18 @@ internal class sunValley : club
 						BookingDiagnostics.Capture(drv, diagnosticsDir, "no-confirmation-id",
 							"submit alert indicated success but no confirmation/reservation number was parsed");
 					}
-					outcome.HistoryVerified = VerifyReservationHistory(bookInfo2, outcome.ConfirmationId, chosenHHmm);
+					if (lastHistoryStrictConfirmed)
+					{
+						// Already confirmed on the history page by the strict criterion
+						// (date + tee time + course + starter). Do NOT let the weaker
+						// VerifyReservationHistory check downgrade that result.
+						outcome.HistoryVerified = true;
+						frm.logtxtBox("T # " + threadIndex + " HistoryVerified: 예약내역 엄격 기준(날짜·시간·코스·스타터) 일치로 확정 유지");
+					}
+					else
+					{
+						outcome.HistoryVerified = VerifyReservationHistory(bookInfo2, outcome.ConfirmationId, chosenHHmm);
+					}
 				}
 				else
 				{
@@ -578,9 +595,16 @@ internal class sunValley : club
 	// Recovery feature: confirm the just-made reservation appears in the account's
 	// reservation history. A failure here (or any exception) returns false, which the
 	// sequential gate treats as "condition not confirmed" -> condition 2 does not start.
+	private string HistoryUrl()
+	{
+		return dummyTestMode
+			? dummyBaseUrl + "/history.html"
+			: (string.IsNullOrWhiteSpace(historyUrl) ? "https://www.sunvalley.co.kr/mypage/reservation" : historyUrl);
+	}
+
 	private bool VerifyReservationHistory(bookInfo req, string confId, string chosenHHmm)
 	{
-		string url = dummyTestMode ? dummyBaseUrl + "/history.html" : (string.IsNullOrWhiteSpace(historyUrl) ? "https://www.sunvalley.co.kr/mypage/reservation" : historyUrl);
+		string url = HistoryUrl();
 		try
 		{
 			((WebDriver)drv).Navigate().GoToUrl(url);
@@ -608,7 +632,7 @@ internal class sunValley : club
 		}
 	}
 
-	private OpResult tryReserve(IWebElement btn)
+	private OpResult tryReserve(IWebElement btn, bookInfo req, string chosenHHmm)
 	{
 #if DIAGNOSTIC_BUILD
 		BookingDiagnostics.Capture(drv, diagnosticsDir, "tryReserve-blocked-DIAGNOSTIC",
@@ -625,23 +649,46 @@ internal class sunValley : club
 			IWebElement val = ((IWebDriver)(object)drv).FindElement(By.XPath("//*[@id='golfTimeDiv2']/div[3]/div/div[1]/button"));
 			if (val == null)
 			{
-				frm.logtxtBox("no button");
-				return result;
+				// Confirm UI changed / did not open. We have not clicked "확정" so a booking is
+				// unlikely, but per policy re-check the history briefly before giving up.
+				frm.logtxtBox("T # " + threadIndex + " 확정 버튼을 찾지 못함 (확인 UI 변경 가능) - 예약내역 재확인");
+				return ConfirmViaHistory(req, chosenHHmm, "확정 버튼 없음(확인 UI 변경)");
 			}
 			try
 			{
 				WebDriverExtensions.clickLock(val);
 				frm.logtxtBox("T # " + threadIndex + " reserve button clicked " + DateTime.Now.ToString("HH:mm:ss.ffffff"));
 				Thread.Sleep(300);
-				string text = ((WebDriver)drv).SwitchTo().Alert().Text;
-				((WebDriver)drv).SwitchTo().Alert().Accept();
-				Thread.Sleep(30);
+				string text;
+				try
+				{
+					text = ((WebDriver)drv).SwitchTo().Alert().Text;
+					((WebDriver)drv).SwitchTo().Alert().Accept();
+					Thread.Sleep(30);
+				}
+				catch (Exception alertEx)
+				{
+					// No completion alert: the site may have navigated to an unsupported page
+					// or the confirm UI changed. The 확정 click DID happen, so a reservation may
+					// exist -> re-check the history (delayed retries) before deciding.
+					frm.logtxtBox("T # " + threadIndex + " 확정 후 완료 alert 없음 (" + alertEx.GetType().Name
+						+ ") - 예약내역으로 재확인");
+					handleAlert();
+					return ConfirmViaHistory(req, chosenHHmm, "완료 alert 없음 / 지원되지 않는 페이지");
+				}
+
+				frm.logtxtBox("T # " + threadIndex + " " + text);
 				if (text.Contains("동일한 일자") || text.Contains("횟수를 초과"))
 				{
 					((WebDriver)drv).Navigate().Back();
-					result = OpResult.DuplicateFail;
+					return OpResult.DuplicateFail;
 				}
-				else if (text.Contains("예약이 완료"))
+				if (text.Contains("다른 곳에서"))
+				{
+					((WebDriver)drv).Navigate().Back();
+					return OpResult.DuplicateLogin;
+				}
+				if (text.Contains("예약이 완료"))
 				{
 					lastConfirmationId = ExtractConfirmationId(text);
 					if (string.IsNullOrEmpty(lastConfirmationId))
@@ -656,21 +703,16 @@ internal class sunValley : club
 					}
 					frm.logtxtBox("T # " + threadIndex + " reservation complete. confirmationId=" + (lastConfirmationId ?? "(not found)"));
 					((WebDriver)drv).Navigate().Back();
-					result = OpResult.BookOneSuccess;
+					return OpResult.BookOneSuccess;
 				}
-				else if (text.Contains("다른 곳에서"))
-				{
-					((WebDriver)drv).Navigate().Back();
-					result = OpResult.DuplicateLogin;
-				}
-				else
-				{
-					result = OpResult.Fail;
-				}
-				frm.logtxtBox("T # " + threadIndex + " " + text);
+				// Alert present but its wording is neither a known success nor a known failure
+				// (confirm-UI text changed). Do not guess from the alert - re-check the history.
+				frm.logtxtBox("T # " + threadIndex + " 확인 alert 문구를 해석하지 못함 - 예약내역으로 재확인");
+				return ConfirmViaHistory(req, chosenHHmm, "알 수 없는 확인 alert");
 			}
 			catch (Exception ex)
 			{
+				// The 확정 click itself failed -> reservation almost certainly not made. Keep Fail.
 				frm.logtxtBox("T # " + threadIndex + " found slot and trying to book " + ex);
 				handleAlert();
 			}
@@ -683,6 +725,66 @@ internal class sunValley : club
 		return result;
 #endif
 	}
+
+#if !DIAGNOSTIC_BUILD
+	// Fallback final-confirmation check. Reached only when the completion alert was absent,
+	// unreadable, or the confirm UI/page changed AFTER the 확정 click. Re-loads the account's
+	// reservation history a few times (growing delays for server propagation) and, if a row
+	// for THIS request (requested date + chosen tee time + selected starter + selected course)
+	// is present on a real history page, treats the reservation as created and logs a clear
+	// "예약내역으로 확인된 완료". We only get here when the site did NOT reject the click as a
+	// duplicate, so a matching row present now is the one just made. If nothing matches after
+	// the retries the outcome is genuinely uncertain -> Fail (never a faked success).
+	private OpResult ConfirmViaHistory(bookInfo req, string chosenHHmm, string reason)
+	{
+		string url = HistoryUrl();
+		frm.logtxtBox("T # " + threadIndex + " 완료 확인 폴백 (" + reason + ") - 예약내역 재확인 시작: " + url);
+		int[] delaysMs = { 1200, 2500, 4000, 6000 };
+		string lastDetail = "(no attempt)";
+		for (int i = 0; i < delaysMs.Length; i++)
+		{
+			try
+			{
+				Thread.Sleep(delaysMs[i]);
+				((WebDriver)drv).Navigate().GoToUrl(url);
+				Thread.Sleep(600);
+			}
+			catch (Exception navEx)
+			{
+				lastDetail = "load-failed: " + navEx.Message;
+				frm.logtxtBox("T # " + threadIndex + " 예약내역 로드 실패 " + (i + 1) + "/" + delaysMs.Length + ": " + navEx.Message);
+				continue;
+			}
+			string page;
+			try { page = ((IWebDriver)(object)drv).PageSource ?? ""; }
+			catch (Exception) { page = ""; }
+
+			if (ReservationHistoryMatch.Matches(page, req.date, chosenHHmm, req.starter, req.courseName, out lastDetail))
+			{
+				lastHistoryStrictConfirmed = true; // 날짜·시간·코스·스타터 엄격 일치
+				if (string.IsNullOrEmpty(lastConfirmationId))
+				{
+					lastConfirmationId = ExtractConfirmationId(page);
+				}
+				BookingDiagnostics.Capture(drv, diagnosticsDir, "history-confirmed-completion",
+					"reason=" + reason + " attempt=" + (i + 1) + "/" + delaysMs.Length + " " + lastDetail
+					+ " confId=" + (lastConfirmationId ?? "(none)"));
+				frm.logtxtBox("T # " + threadIndex + " 예약내역으로 확인된 완료: 요청일 " + req.date
+					+ " 티타임 " + chosenHHmm + " 스타터 " + (req.starter ?? "NA")
+					+ " 코스 " + (req.courseName ?? "(미상)")
+					+ " confId=" + (lastConfirmationId ?? "(없음)")
+					+ " (완료 alert 미확인, 폴백 재확인 " + (i + 1) + "회차)");
+				return OpResult.BookOneSuccess;
+			}
+			frm.logtxtBox("T # " + threadIndex + " 예약내역 재확인 " + (i + 1) + "/" + delaysMs.Length
+				+ ": 일치 항목 없음 (" + lastDetail + ")");
+		}
+		BookingDiagnostics.Capture(drv, diagnosticsDir, "history-confirm-failed",
+			"reason=" + reason + " - no matching reservation row after " + delaysMs.Length + " delayed retries; " + lastDetail);
+		frm.logtxtBox("T # " + threadIndex + " 예약내역에서 확인 실패 - 예약 생성 여부 불확실. 실패로 처리합니다.");
+		return OpResult.Fail;
+	}
+#endif
 
 	public override bool monitorOne(string date_p)
 	{

@@ -14,6 +14,10 @@ internal class bookInfo
 
 	public int starterIndex;
 
+	// Recovery feature: display name of the selected course (e.g. "설악썬밸리"), set by
+	// ConditionParser. Used only by the SunValley history-fallback confirmation. May be null.
+	public string courseName;
+
 	// Recovery feature: per-condition desired tee-off time as HHMM (e.g. 905 = 09:05).
 	// The nearest-time selector picks the tee with the smallest absolute minute
 	// difference from this value. Falls back to startTime when not supplied.

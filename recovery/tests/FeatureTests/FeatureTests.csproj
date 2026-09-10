@@ -27,6 +27,7 @@
     <Compile Include="..\..\src\booking\BookOutcome.cs" />
     <Compile Include="..\..\src\booking\BookingDiagnostics.cs" />
     <Compile Include="..\..\src\booking\ConditionParser.cs" />
+    <Compile Include="..\..\src\booking\ReservationHistoryMatch.cs" />
     <Compile Include="..\..\src\booking\SequentialGate.cs" />
     <Compile Include="..\..\src\booking\CredentialStore.cs" />
     <Compile Include="..\..\src\booking\SunValleySchedule.cs" />

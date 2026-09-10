@@ -73,7 +73,10 @@ internal static class ConditionParser
 			int starterIdx = (starterNames != null) ? Array.IndexOf(starterNames, starter) : -1;
 
 			// No time window: the desired time is the nearest-time target.
-			return new bookInfo(courseIdx, starter, starterIdx, date, desired, desired, desired);
+			bookInfo bi = new bookInfo(courseIdx, starter, starterIdx, date, desired, desired, desired);
+			bi.courseName = (courseNames != null && courseIdx >= 0 && courseIdx < courseNames.Length)
+				? courseNames[courseIdx] : null;
+			return bi;
 		}
 		catch (Exception)
 		{

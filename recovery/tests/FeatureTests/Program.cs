@@ -37,6 +37,9 @@ internal static class Program
 		Section("7. Sun Valley scheduled single-check policy (no browser / no submission)");
 		SunValleyScheduleTests();
 
+		Section("8. Reservation-history fallback confirmation match (ReservationHistoryMatch)");
+		ReservationHistoryMatchTests();
+
 		Console.WriteLine();
 		Console.WriteLine("================ " + _pass + " passed, " + _fail + " failed ================");
 		Environment.Exit(_fail == 0 ? 0 : 1);
@@ -69,6 +72,72 @@ internal static class Program
 		var req = new bookInfo(course, "NA", 0, date, 900, 1000, 900);
 		bool configured = SunValleySchedule.TryGetSingleCheckTime(req, out DateTime actual, out _);
 		Expect(name, configured && actual == expected, "actual=" + actual.ToString("yyyy-MM-dd HH:mm:ss"));
+	}
+
+	// ---------------------------------------------------------------- group 8
+	private static void ReservationHistoryMatchTests()
+	{
+		// a realistic history page carrying one matching row
+		string page = "<html><body><h1>마이페이지 &gt; 예약내역</h1>"
+			+ "<tr class='rsv'><td>2026-09-30 (20260930)</td><td>08:50 (0850)</td>"
+			+ "<td>설악썬밸리</td><td>설악</td><td>SV-77</td><td>예약완료</td></tr></body></html>";
+
+		Expect("LooksLikeHistoryPage: real page", ReservationHistoryMatch.LooksLikeHistoryPage(page), "");
+		Expect("LooksLikeHistoryPage: empty -> false", !ReservationHistoryMatch.LooksLikeHistoryPage(""), "");
+		Expect("LooksLikeHistoryPage: unsupported/error page -> false",
+			!ReservationHistoryMatch.LooksLikeHistoryPage("<html><body>지원되지 않는 페이지입니다. 예약내역</body></html>"), "");
+		Expect("LooksLikeHistoryPage: unrelated page -> false",
+			!ReservationHistoryMatch.LooksLikeHistoryPage("<html><body>welcome to the front page, nothing here at all</body></html>"), "");
+
+		// primary path: date + tee time + selected COURSE identify the row
+		Expect("match: date + time(HH:MM) + course present",
+			ReservationHistoryMatch.Matches(page, "20260930", "08:50", "설악", "설악썬밸리", out _), "");
+		Expect("match: chosen time given as HHMM still hits",
+			ReservationHistoryMatch.Matches(page, "20260930", "0850", "설악", "설악썬밸리", out _), "");
+
+		Expect("no match: wrong date", !ReservationHistoryMatch.Matches(page, "20261001", "08:50", "설악", "설악썬밸리", out _), "");
+		Expect("no match: wrong tee time", !ReservationHistoryMatch.Matches(page, "20260930", "09:10", "설악", "설악썬밸리", out _), "");
+		Expect("no match: wrong course", !ReservationHistoryMatch.Matches(page, "20260930", "08:50", "설악", "여주썬밸리", out _), "");
+
+		// starter is MANDATORY even when the course matches: date+time+course hit but the
+		// selected starter is absent / different -> Fail (never a faked success).
+		string pageWrongStarter = "<html><body>예약내역 2026-09-30 08:50 (0850) 동원썬밸리 스타터 썬 예약완료 padding</body></html>";
+		Expect("no match: course hit but selected starter absent -> Fail",
+			!ReservationHistoryMatch.Matches(pageWrongStarter, "20260930", "0850", "설악", "동원썬밸리", out _), "");
+		Expect("no match: course hit, no starter token on page at all -> Fail",
+			!ReservationHistoryMatch.Matches("<html><body>예약내역 2026-09-30 08:50 동원썬밸리 예약완료 padding padding</body></html>",
+				"20260930", "08:50", "설악", "동원썬밸리", out _), "");
+		Expect("match: course hit AND selected starter present -> success",
+			ReservationHistoryMatch.Matches(pageWrongStarter, "20260930", "0850", "썬", "동원썬밸리", out _), "");
+
+		Expect("no match: not a history page (uncertain -> never a faked success)",
+			!ReservationHistoryMatch.Matches("<html><body>페이지를 찾을 수 없습니다 20260930 0850 설악 설악썬밸리</body></html>",
+				"20260930", "08:50", "설악", "설악썬밸리", out _), "");
+		Expect("no match: empty page", !ReservationHistoryMatch.Matches("", "20260930", "08:50", "설악", "설악썬밸리", out _), "");
+
+		// no course name known -> the selected STARTER must be present instead
+		string pageNoCourse = "<html><body>예약내역 2026-09-30 08:50 스타터 설악 예약완료 padding padding</body></html>";
+		Expect("no-course path: starter present -> match",
+			ReservationHistoryMatch.Matches(pageNoCourse, "20260930", "08:50", "설악", null, out _), "");
+		Expect("no-course path: starter absent -> no match",
+			!ReservationHistoryMatch.Matches("<html><body>예약내역 2026-09-30 08:50 예약완료 padding padding padding</body></html>",
+				"20260930", "08:50", "설악", null, out _), "");
+		Expect("no-course path: starter 'NA' not required -> match",
+			ReservationHistoryMatch.Matches("<html><body>예약내역 2026-09-30 08:50 예약완료 padding padding padding</body></html>",
+				"20260930", "08:50", "NA", null, out _), "");
+
+		// date separators
+		Expect("match: yyyy-mm-dd date form",
+			ReservationHistoryMatch.Matches("<html><body>예약내역 2026-09-30 0850 설악썬밸리 done</body></html>",
+				"20260930", "0850", "설악", "설악썬밸리", out _), "");
+		Expect("match: yyyy.mm.dd date form",
+			ReservationHistoryMatch.Matches("<html><body>예약내역 2026.09.30 08:50 설악썬밸리 done</body></html>",
+				"20260930", "08:50", "설악", "설악썬밸리", out _), "");
+
+		// ConditionParser now carries the course name for this check
+		var bi = ConditionParser.Parse("설악썬밸리,20260930,0850,설악",
+			new[] { "설악썬밸리", "썬밸리CC", "동원썬밸리", "여주썬밸리" }, new[] { "설악", "썬", "밸리", "NA" });
+		Expect("ConditionParser fills bookInfo.courseName", bi != null && bi.courseName == "설악썬밸리", "courseName=" + bi?.courseName);
 	}
 
 	// ---------------------------------------------------------------- group 1
