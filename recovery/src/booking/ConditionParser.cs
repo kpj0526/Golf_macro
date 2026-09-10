@@ -5,16 +5,17 @@ namespace booking;
 /// <summary>
 /// Recovery feature (pure, unit-tested): parse one fixed condition slot.
 ///
-/// Current format (5 fields):  "course,yyyymmdd,startHHMM,endHHMM,starter"
-///   start/end : inclusive tee-off time window, HHMM (non-digits stripped). start &lt;= end.
+/// Format (4 fields):  "course,yyyymmdd,desiredHHMM,starter"
+///   desired : wanted tee-off time, HHMM (non-digits stripped).
 ///
-/// Legacy format (4 fields):   "course,yyyymmdd,desiredHHMM,starter"
-///   Migrated: startTime = desired ; endTime = desired + 2h (clamped to 23:59).
+/// A 5-field value "course,yyyymmdd,startHHMM,endHHMM,starter" saved by an older build is
+/// still accepted: only the start field is read (as the desired time); the end field is
+/// ignored.
 ///
 /// course  : a Sun Valley course name; unknown -> index 0
 /// date    : 8 digits yyyymmdd (any separators stripped)
 /// starter : starter name; looked up in starterNames (may be -1 / "NA")
-/// Returns null for an unset ("&lt;...&gt;"), blank, or malformed line (incl. start &gt; end).
+/// Returns null for an unset ("&lt;...&gt;"), blank, or malformed line.
 /// </summary>
 internal static class ConditionParser
 {
@@ -48,39 +49,31 @@ internal static class ConditionParser
 				return null;
 			}
 
-			int start, end;
+			int desired;
 			string starter;
 
 			if (p.Length >= 5)
 			{
-				// 5-field: start, end, starter
-				if (!TryHHMM(p[2], out start) || !TryHHMM(p[3], out end))
+				// 5-field value from an older build: read the start field only, ignore the end.
+				if (!TryHHMM(p[2], out desired))
 				{
 					return null;
-				}
-				if (ToMinutes(start) > ToMinutes(end))
-				{
-					return null; // start must not be later than end
 				}
 				starter = p[4].Trim();
 			}
 			else
 			{
-				// 4-field legacy: single desired time -> migrate to [desired, desired+2h]
-				if (!TryHHMM(p[2], out int desired))
+				if (!TryHHMM(p[2], out desired))
 				{
 					return null;
 				}
-				start = desired;
-				int endMin = Math.Min(23 * 60 + 59, ToMinutes(desired) + LegacyWindowMinutes);
-				end = FromMinutes(endMin);
 				starter = p[3].Trim();
 			}
 
 			int starterIdx = (starterNames != null) ? Array.IndexOf(starterNames, starter) : -1;
 
-			// desiredTime target for the nearest-time pick = the window start.
-			return new bookInfo(courseIdx, starter, starterIdx, date, start, end, start);
+			// No time window: the desired time is the nearest-time target.
+			return new bookInfo(courseIdx, starter, starterIdx, date, desired, desired, desired);
 		}
 		catch (Exception)
 		{

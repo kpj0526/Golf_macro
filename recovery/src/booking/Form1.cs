@@ -42,8 +42,8 @@ public class Form1 : Form
 	// Recovery: original buttons kept; the dynamic 추가/삭제 pair is dropped (index 3 = 저장).
 	private string[] btnNames = new string[6] { "Start", "Stop", "Setting", "저장", "", "" };
 
-	// 예약1: 시작 시(h)/분(m), 종료 시/분   |   예약2: 시작 시/분, 종료 시/분
-	private string[] timeNames = new string[8] { "s1Hour", "s1Min", "e1Hour", "e1Min", "s2Hour", "s2Min", "e2Hour", "e2Min" };
+	// 예약1: 희망 시(h)/분(m)   |   예약2: 희망 시/분
+	private string[] timeNames = new string[4] { "s1Hour", "s1Min", "s2Hour", "s2Min" };
 
 	private bool headless;
 
@@ -82,10 +82,8 @@ public class Form1 : Form
 
 	private CheckBox chkR2;   // "예약 2 사용", default OFF
 
-	// 시작/종료 시각의 UI 기본값 (nupArr 초기화에만 사용; 판정은 항상 nupArr에서 읽음)
+	// 희망 시각의 UI 기본값 (nupArr 초기화에만 사용; 판정은 항상 nupArr에서 읽음)
 	private int start1 = 900;
-
-	private int end1 = 1200;
 
 	// 시작-시간 범위 검증 결과 (통합 테스트에서 확인). null = 통과.
 	internal string lastStartError;
@@ -121,8 +119,8 @@ public class Form1 : Form
 
 	private bool expire = true;
 
-	// [0..3] 예약1: 시작 h,m / 종료 h,m     [4..7] 예약2: 시작 h,m / 종료 h,m
-	private NumericUpDown[] nupArr = new NumericUpDown[8];
+	// [0..1] 예약1 희망 h,m     [2..3] 예약2 희망 h,m
+	private NumericUpDown[] nupArr = new NumericUpDown[4];
 
 	private bool gotStart = true;
 
@@ -347,7 +345,7 @@ public class Form1 : Form
 			return;
 		}
 
-		// ===== 시작 시간 <= 종료 시간 검증: 드라이버/브라우저 초기화 이전에 반드시 통과 =====
+		// ===== 희망 시간 검증: 드라이버/브라우저 초기화 이전에 반드시 통과 =====
 		string vErr = ValidateStart();
 		if (vErr != null)
 		{
@@ -464,20 +462,14 @@ public class Form1 : Form
 
 	// ---- Recovery helpers: two fixed conditions bound directly to the visible controls ----
 
-	// 시작/종료 시각은 항상 화면 컨트롤(nupArr)에서 직접 읽는다 -> 캐시된 값과 어긋날 수 없음.
-	private int SlotStart(int slot)
+	// 희망 시각은 항상 화면 컨트롤(nupArr)에서 직접 읽는다 -> 캐시된 값과 어긋날 수 없음.
+	private int SlotDesired(int slot)
 	{
-		int b = (slot == 1) ? 0 : 4;
+		int b = (slot == 1) ? 0 : 2;
 		return (int)nupArr[b].Value * 100 + (int)nupArr[b + 1].Value;
 	}
 
-	private int SlotEnd(int slot)
-	{
-		int b = (slot == 1) ? 2 : 6;
-		return (int)nupArr[b].Value * 100 + (int)nupArr[b + 1].Value;
-	}
-
-	// "course,yyyymmdd,startHHMM,endHHMM,starter"
+	// "course,yyyymmdd,desiredHHMM,starter"
 	private string ConditionString(int slot)
 	{
 		ListBox course = (slot == 1) ? courseLb : courseLb2;
@@ -487,7 +479,7 @@ public class Form1 : Form
 		string s = starter.SelectedItem?.ToString();
 		if (string.IsNullOrWhiteSpace(c)) { c = "NA"; }
 		if (string.IsNullOrWhiteSpace(s)) { s = "NA"; }
-		return c + "," + date.Value.ToString("yyyyMMdd") + "," + SlotStart(slot) + "," + SlotEnd(slot) + "," + s;
+		return c + "," + date.Value.ToString("yyyyMMdd") + "," + SlotDesired(slot) + "," + s;
 	}
 
 	private bookInfo ParseCondition(string s)
@@ -529,21 +521,16 @@ public class Form1 : Form
 		{
 			return label + ": 골프장을 선택하세요.";
 		}
-		int st = SlotStart(slot);
-		int en = SlotEnd(slot);
-		if (slot == 2 && (st <= 0 || en <= 0))
+		int desired = SlotDesired(slot);
+		if (slot == 2 && desired <= 0)
 		{
-			return label + " 사용 시 골프장 · 날짜 · 시작 시간 · 종료 시간을 모두 입력하세요.";
+			return label + " 사용 시 골프장 · 날짜 · 희망 시간을 모두 입력하세요.";
 		}
-		// SAME validation as persistence/parser.
+		// SAME parse as persistence.
 		bookInfo bi = ParseCondition(ConditionString(slot));
 		if (bi == null)
 		{
-			if (ConditionParser.ToMinutes(st) > ConditionParser.ToMinutes(en))
-			{
-				return label + ": 시작 시간(" + Hhmm(st) + ")이 종료 시간(" + Hhmm(en) + ")보다 늦습니다. 시작 시간 ≤ 종료 시간이 되도록 수정하세요.";
-			}
-			return label + ": 시간 값 형식이 올바르지 않습니다.";
+			return label + ": 희망 시간 값 형식이 올바르지 않습니다.";
 		}
 		return null;
 	}
@@ -559,10 +546,8 @@ public class Form1 : Form
 		courseLb2.Enabled = on;
 		starterLb2.Enabled = on;
 		dt2.Enabled = on;
-		nupArr[4].Enabled = on;
-		nupArr[5].Enabled = on;
-		nupArr[6].Enabled = on;
-		nupArr[7].Enabled = on;
+		nupArr[2].Enabled = on;
+		nupArr[3].Enabled = on;
 	}
 
 	private bool start()
@@ -588,7 +573,7 @@ public class Form1 : Form
 
 		bookInfo c1 = ParseCondition(ConditionString(1));
 		bookList.Add(c1);
-		logtxtBox("예약 1 티타임 범위 " + Hhmm(SlotStart(1)) + " ~ " + Hhmm(SlotEnd(1)) + " (이 범위 밖 슬롯은 선택하지 않음)");
+		logtxtBox("예약 1 희망 티타임 " + Hhmm(SlotDesired(1)) + " (가능한 슬롯 중 가장 가까운 시간을 선택)");
 
 		if (!chkR2.Checked)
 		{
@@ -598,7 +583,7 @@ public class Form1 : Form
 		{
 			bookInfo c2 = ParseCondition(ConditionString(2));
 			bookList.Add(c2);
-			logtxtBox("예약 2 티타임 범위 " + Hhmm(SlotStart(2)) + " ~ " + Hhmm(SlotEnd(2))
+			logtxtBox("예약 2 희망 티타임 " + Hhmm(SlotDesired(2))
 				+ " - 예약 1 결과와 관계없이(브라우저/페이지 오류 제외) 순차 진행.");
 		}
 
@@ -1029,7 +1014,7 @@ public class Form1 : Form
 		tableLayoutPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 45f));
 		// 겹침 방지: 예약 1 / 예약 2 블록 행에 충분한 높이 확보
 		tableLayoutPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 70f));   // 0 buttons
-		tableLayoutPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 280f));  // 1 예약 1 block (제목+시작·종료+골프장/날짜)
+		tableLayoutPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 280f));  // 1 예약 1 block (제목+희망 시간+골프장/날짜)
 		tableLayoutPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 116f));  // 2 account (계정 1 / 계정 2 + 저장 체크가 안 잘리게)
 		tableLayoutPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 290f));  // 3 예약 2 block
 		tableLayoutPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 70f));   // 4 저장
@@ -1085,18 +1070,17 @@ public class Form1 : Form
 		starterLb2 = new ListBox { Name = "starter2", Size = new Size(150, 100), BorderStyle = BorderStyle.Fixed3D, Enabled = false };
 		dt2 = new DateTimePicker { Format = DateTimePickerFormat.Short, Width = 120, Enabled = false };
 
-		// 8개 시간 입력: 예약1 시작 h/m·종료 h/m  +  예약2 시작 h/m·종료 h/m
-		for (int i = 0; i < 8; i++)
+		// 4개 시간 입력: 예약1 희망 h/m  +  예약2 희망 h/m
+		for (int i = 0; i < 4; i++)
 		{
 			nupArr[i] = MakeTimeNup((i % 2 == 0) ? 23 : 59, timeNames[i]);
 		}
-		for (int i = 4; i < 8; i++)
+		for (int i = 2; i < 4; i++)
 		{
 			nupArr[i].Enabled = false; // 예약2 시간은 '예약 2 사용' 체크 시 활성화
 		}
-		SetNup(nupArr[0], start1 / 100); SetNup(nupArr[1], start1 % 100); // 예약1 시작 기본 09:00
-		SetNup(nupArr[2], end1 / 100);   SetNup(nupArr[3], end1 % 100);   // 예약1 종료 기본 12:00
-		// nupArr[4..7] = 0 -> 예약2 시간 미입력 상태
+		SetNup(nupArr[0], start1 / 100); SetNup(nupArr[1], start1 % 100); // 예약1 희망 기본 09:00
+		// nupArr[2..3] = 0 -> 예약2 시간 미입력 상태
 
 		chkR2 = new CheckBox { Text = "예약 2 사용", AutoSize = true, Checked = false, Margin = new Padding(16, 4, 0, 0) };
 		chkR2.CheckedChanged += delegate { SetR2Enabled(chkR2.Checked); };
@@ -1108,11 +1092,11 @@ public class Form1 : Form
 		starterLb2.SelectedIndex = 0;
 		dt2.Value = DateTime.Today.AddDays(opendays[releaseVersion]);
 
-		// 예약 1 : 시작/종료 시간을 구역 '위쪽'에 (제목 바로 아래)
-		tableLayoutPanel.Controls.Add(BuildResBlock("■ 예약 1", null, courseLb, starterLb, dt, nupArr[0], nupArr[1], nupArr[2], nupArr[3], timeFirst: true, acct: acctCbo1), 0, 1);
+		// 예약 1 : 희망 시간을 구역 '위쪽'에 (제목 바로 아래)
+		tableLayoutPanel.Controls.Add(BuildResBlock("■ 예약 1", null, courseLb, starterLb, dt, nupArr[0], nupArr[1], timeFirst: true, acct: acctCbo1), 0, 1);
 		tableLayoutPanel.SetColumnSpan(tableLayoutPanel.GetControlFromPosition(0, 1), 3);
-		// 예약 2 : 시작/종료 시간을 구역 '아래쪽'에 (골프장/날짜 다음)
-		tableLayoutPanel.Controls.Add(BuildResBlock("■ 예약 2", chkR2, courseLb2, starterLb2, dt2, nupArr[4], nupArr[5], nupArr[6], nupArr[7], timeFirst: false, acct: acctCbo2), 0, 3);
+		// 예약 2 : 희망 시간을 구역 '아래쪽'에 (골프장/날짜 다음)
+		tableLayoutPanel.Controls.Add(BuildResBlock("■ 예약 2", chkR2, courseLb2, starterLb2, dt2, nupArr[2], nupArr[3], timeFirst: false, acct: acctCbo2), 0, 3);
 		tableLayoutPanel.SetColumnSpan(tableLayoutPanel.GetControlFromPosition(0, 3), 3);
 
 		// 저장 버튼 (원래 위치 유지: 하단 행)
@@ -1138,12 +1122,12 @@ public class Form1 : Form
 		return n;
 	}
 
-	// 한 예약 블록: [제목(+체크)] + [시작 시간 줄] + [종료 시간 줄] + [골프장·스타터·날짜 줄].
-	// timeFirst=true  -> 시간 두 줄을 제목 바로 아래(위쪽)에   (예약 1)
-	// timeFirst=false -> 시간 두 줄을 골프장/날짜 다음(아래쪽)에 (예약 2)
+	// 한 예약 블록: [제목(+체크)] + [희망 시간 줄] + [골프장·스타터·날짜 줄].
+	// timeFirst=true  -> 희망 시간 줄을 제목 바로 아래(위쪽)에   (예약 1)
+	// timeFirst=false -> 희망 시간 줄을 골프장/날짜 다음(아래쪽)에 (예약 2)
 	// 예약1의 시간은 상단, 예약2의 시간은 하단이라 공용 행처럼 보이지 않는다.
 	private Control BuildResBlock(string title, CheckBox chk, ListBox course, ListBox starter,
-		DateTimePicker date, NumericUpDown sH, NumericUpDown sM, NumericUpDown eH, NumericUpDown eM, bool timeFirst,
+		DateTimePicker date, NumericUpDown sH, NumericUpDown sM, bool timeFirst,
 		ComboBox acct = null)
 	{
 		FlowLayoutPanel titleRow = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0, 2, 0, 2) };
@@ -1166,27 +1150,23 @@ public class Form1 : Form
 			fields.Controls.Add(acct);
 		}
 
-		FlowLayoutPanel startRow = TimeRow("시작 시간", sH, sM);
-		FlowLayoutPanel endRow = TimeRow("종료 시간", eH, eM);
+		FlowLayoutPanel startRow = TimeRow("희망 시간", sH, sM);
 
 		FlowLayoutPanel block = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.TopDown, WrapContents = false, Margin = new Padding(2, 6, 2, 12) };
 		block.Controls.Add(titleRow);
 		if (timeFirst)
 		{
 			block.Controls.Add(startRow);
-			block.Controls.Add(endRow);
 			block.Controls.Add(fields);
 		}
 		else
 		{
 			block.Controls.Add(fields);
 			block.Controls.Add(startRow);
-			block.Controls.Add(endRow);
 		}
 		coreData.setFonts(titleRow.Controls, 10);
 		coreData.setFonts(fields.Controls, 10);
 		coreData.setFonts(startRow.Controls, 10);
-		coreData.setFonts(endRow.Controls, 10);
 		return block;
 	}
 
@@ -1253,8 +1233,7 @@ public class Form1 : Form
 			int s1 = Array.IndexOf(starters[releaseVersion], b1.starter);
 			if (s1 >= 0 && s1 < starterLb.Items.Count) { starterLb.SelectedIndex = s1; }
 			SetDate(dt, b1.date);
-			SetNup(nupArr[0], b1.startTime / 100); SetNup(nupArr[1], b1.startTime % 100);
-			SetNup(nupArr[2], b1.endTime / 100);   SetNup(nupArr[3], b1.endTime % 100);
+			SetNup(nupArr[0], b1.desiredTime / 100); SetNup(nupArr[1], b1.desiredTime % 100);
 		}
 
 		bookInfo b2 = ParseCondition(coreData.condition2);
@@ -1266,8 +1245,7 @@ public class Form1 : Form
 			int s2 = Array.IndexOf(starters[releaseVersion], b2.starter);
 			if (s2 >= 0 && s2 < starterLb2.Items.Count) { starterLb2.SelectedIndex = s2; }
 			SetDate(dt2, b2.date);
-			SetNup(nupArr[4], b2.startTime / 100); SetNup(nupArr[5], b2.startTime % 100);
-			SetNup(nupArr[6], b2.endTime / 100);   SetNup(nupArr[7], b2.endTime % 100);
+			SetNup(nupArr[2], b2.desiredTime / 100); SetNup(nupArr[3], b2.desiredTime % 100);
 		}
 		RefreshEcho();
 	}
@@ -1316,7 +1294,7 @@ public class Form1 : Form
 
 	private void numericUpDown_ValueChanged(object sender, EventArgs e)
 	{
-		// 시작/종료 값은 저장/실행 시 nupArr 에서 직접 읽으므로 여기서 캐싱할 필요가 없다.
+		// 희망 시간 값은 저장/실행 시 nupArr 에서 직접 읽으므로 여기서 캐싱할 필요가 없다.
 		if (noEventHandler)
 		{
 			return;

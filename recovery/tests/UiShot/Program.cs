@@ -63,7 +63,7 @@ internal static class Program
 		int nups = Count(f, c => c is NumericUpDown && c.Visible);
 		bool lbl1 = Contains(f, c => c is Label && c.Visible && c.Text != null && c.Text.Contains("예약 1"));
 		bool lbl2 = Contains(f, c => c is Label && c.Visible && c.Text != null && c.Text.Contains("예약 2"));
-		int startLbls = Count(f, c => c is Label && c.Visible && c.Text == "시작 시간");
+		int startLbls = Count(f, c => c is Label && c.Visible && c.Text == "희망 시간");
 		int endLbls = Count(f, c => c is Label && c.Visible && c.Text == "종료 시간");
 		bool useR2 = Contains(f, c => c is CheckBox && c.Visible && c.Text == "예약 2 사용");
 		bool saveCred = Contains(f, c => c is CheckBox && c.Visible && c.Text == "계정 저장");
@@ -92,9 +92,9 @@ internal static class Program
 		sb.AppendLine("  '예약 1' label visible                     : " + lbl1);
 		sb.AppendLine("  '예약 2' label visible                     : " + lbl2);
 		sb.AppendLine("  visible DateTimePicker count (== 2)        : " + dates);
-		sb.AppendLine("  visible NumericUpDown count (== 8)         : " + nups);
-		sb.AppendLine("  '시작 시간' labels (== 2)                  : " + startLbls);
-		sb.AppendLine("  '종료 시간' labels (== 2)                  : " + endLbls);
+		sb.AppendLine("  visible NumericUpDown count (== 4)         : " + nups);
+		sb.AppendLine("  '희망 시간' labels (== 2)                  : " + startLbls);
+		sb.AppendLine("  '종료 시간' labels (== 0)                  : " + endLbls);
 		sb.AppendLine("  '예약 2 사용' checkbox present             : " + useR2);
 		sb.AppendLine("  '계정 저장' checkbox present        : " + saveCred);
 		sb.AppendLine("  " + pwLine);
@@ -102,12 +102,12 @@ internal static class Program
 		sb.AppendLine("  no clipped/cropped controls               : " + (clipped.Count == 0));
 		foreach (var x in clipped) sb.AppendLine("      CLIPPED: " + x);
 
-		bool ok = f.Text.StartsWith("2개 예약 설정") && lbl1 && lbl2 && dates == 2 && nups == 8
-			&& startLbls == 2 && endLbls == 2
+		bool ok = f.Text.StartsWith("2개 예약 설정") && lbl1 && lbl2 && dates == 2 && nups == 4
+			&& startLbls == 2 && endLbls == 0
 			&& useR2 && saveCred && pwExpectationOk && noPwInDump && clipped.Count == 0;
 		sb.AppendLine();
 		sb.AppendLine(ok
-			? "RESULT: PASS - 예약 1 / 예약 2 each with 골프장·날짜·시작 시간·종료 시간 visible, no cropping; '예약 2 사용' + '계정 저장' present."
+			? "RESULT: PASS - 예약 1 / 예약 2 each with 골프장·날짜·희망 시간 visible (no end-time control), no cropping; '예약 2 사용' + '계정 저장' present."
 			: "RESULT: FAIL");
 
 		string txt = Path.Combine(outDir, stamp + "_Form1-uitree.txt");

@@ -7,8 +7,8 @@ using booking;
 namespace StartValidation;
 
 // Integration-level test of the real WinForms Start path: the Start-button handler
-// (setUIStart) must reject start > end for every ENABLED reservation BEFORE any
-// ChromeDriver / browser is created, and keep the macro closed.
+// (setUIStart) must reject an incomplete ENABLED reservation (missing course/date/희망 시간)
+// BEFORE any ChromeDriver / browser is created, and keep the macro closed.
 internal static class Program
 {
 	private static int _pass;
@@ -30,83 +30,82 @@ internal static class Program
 		}
 		catch { }
 
-		// --- 1. 예약 1 : start 13:00 > end 12:00  -> Start blocked, no browser ---
-		Case("예약 1 start 13:00 / end 12:00 -> blocked, no driver", f =>
+		// --- 1. 예약 2 사용 + 희망 시간 미입력 -> setUIStart 차단, 브라우저/드라이버 미실행 ---
+		Case("예약 2 enabled without 희망 시간 -> blocked naming 예약 2, no driver", f =>
 		{
 			SetId(f, "acct_test");
 			SetCourse(f, "courseLb", 0);
-			SetNup(f, 0, 13); SetNup(f, 1, 0);   // 예약1 시작 13:00
-			SetNup(f, 2, 12); SetNup(f, 3, 0);   // 예약1 종료 12:00
-			InvokeSetUIStart(f);
-			string err = LastError(f);
-			bool blocked = err != null && err.Contains("예약 1") && (err.Contains("시작") && err.Contains("종료"));
-			bool noDriver = GetField(f, "driver") == null && GetField(f, "ts") == null;
-			return (blocked && noDriver, "err=\"" + err + "\"  driverNull=" + (GetField(f, "driver") == null) + " tsNull=" + (GetField(f, "ts") == null));
-		});
-
-		// --- 2. 예약 1 valid, 예약 2 enabled with start 15:00 > end 09:00 -> blocked naming 예약 2 ---
-		Case("예약 2 enabled, start 15:00 / end 09:00 -> blocked naming 예약 2, no driver", f =>
-		{
-			SetId(f, "acct_test");
-			SetCourse(f, "courseLb", 0);
-			SetNup(f, 0, 9); SetNup(f, 1, 0);   // 예약1 09:00
-			SetNup(f, 2, 12); SetNup(f, 3, 0);  // 예약1 12:00  (valid)
+			SetNup(f, 0, 9); SetNup(f, 1, 0);    // 예약1 희망 09:00 (valid)
 			SetCheck(f, "chkR2", true);
 			SetCourse(f, "courseLb2", 0);
-			SetNup(f, 4, 15); SetNup(f, 5, 0);  // 예약2 시작 15:00
-			SetNup(f, 6, 9);  SetNup(f, 7, 0);  // 예약2 종료 09:00
+			// nupArr[2..3] left at 0 -> 예약2 희망 시간 미입력
 			InvokeSetUIStart(f);
 			string err = LastError(f);
 			bool blocked = err != null && err.Contains("예약 2");
-			bool noDriver = GetField(f, "driver") == null;
-			return (blocked && noDriver, "err=\"" + err + "\"  driverNull=" + noDriver);
+			bool noDriver = GetField(f, "driver") == null && GetField(f, "ts") == null;
+			return (blocked && noDriver, "err=\"" + err + "\" driverNull=" + (GetField(f, "driver") == null) + " tsNull=" + (GetField(f, "ts") == null));
 		});
 
-		// --- 3. 예약 2 enabled but time not entered (0:00/0:00) -> blocked, no driver ---
-		Case("예약 2 enabled, times 00:00 -> blocked (모두 입력), no driver", f =>
+		// --- 2. 예약 1 골프장 미선택 -> setUIStart 차단, 드라이버 미실행 ---
+		//     Form1_Load 의 buildClubList 가 courseLb.SelectedIndex 를 0 으로 만들어 두므로
+		//     실제 '미선택' 상태를 재현하려면 여기서 명시적으로 -1 로 되돌린다.
+		Case("예약 1 course not selected -> blocked, no driver", f =>
 		{
 			SetId(f, "acct_test");
-			SetCourse(f, "courseLb", 0);
-			SetNup(f, 0, 9); SetNup(f, 1, 0); SetNup(f, 2, 12); SetNup(f, 3, 0);
-			SetCheck(f, "chkR2", true);
-			SetCourse(f, "courseLb2", 0);
-			// nupArr[4..7] left at 0
+			SetCourse(f, "courseLb", -1);        // 실제 미선택 상태 강제
+			SetNup(f, 0, 9); SetNup(f, 1, 0);
+			SetCheck(f, "chkR2", false);
+			bool preSelNeg = ((ListBox)GetField(f, "courseLb")).SelectedIndex < 0;
 			InvokeSetUIStart(f);
 			string err = LastError(f);
-			return (err != null && err.Contains("예약 2") && GetField(f, "driver") == null, "err=\"" + err + "\"");
+			return (preSelNeg && err != null && err.Contains("예약 1") && GetField(f, "driver") == null && GetField(f, "ts") == null,
+				"selIdx<0=" + preSelNeg + " err=\"" + err + "\" driverNull=" + (GetField(f, "driver") == null));
 		});
 
-		// --- 4. ValidateStart() directly: all-valid -> null (uses the SAME parser rule) ---
+		// --- 3. 예약 2 사용 + 골프장·희망 시간 모두 입력 -> ValidateStart() == null ---
+		Case("예약 2 enabled and complete -> ValidateStart() null", f =>
+		{
+			SetCourse(f, "courseLb", 0);
+			SetNup(f, 0, 9); SetNup(f, 1, 0);
+			SetCheck(f, "chkR2", true);
+			SetCourse(f, "courseLb2", 0);
+			SetNup(f, 2, 15); SetNup(f, 3, 30);   // 예약2 희망 15:30
+			string r = (string)f.GetType().GetMethod("ValidateStart", NP).Invoke(f, null);
+			return (r == null, "ValidateStart=" + (r ?? "null"));
+		});
+
+		// --- 4. ValidateStart() directly: valid single reservation -> null ---
 		Case("ValidateStart() returns null for a valid single reservation", f =>
 		{
 			SetCourse(f, "courseLb", 0);
-			SetNup(f, 0, 9); SetNup(f, 1, 0); SetNup(f, 2, 10); SetNup(f, 3, 30);
+			SetNup(f, 0, 9); SetNup(f, 1, 0);
 			SetCheck(f, "chkR2", false);
 			string r = (string)f.GetType().GetMethod("ValidateStart", NP).Invoke(f, null);
 			return (r == null, "ValidateStart=" + (r ?? "null"));
 		});
 
-		// --- 5. start == end is allowed (inclusive) ---
-		Case("ValidateStart() allows start == end", f =>
+		// --- 5. any 희망 시간 value is accepted (no start<=end constraint anymore) ---
+		Case("ValidateStart() accepts an arbitrary 희망 시간", f =>
 		{
 			SetCourse(f, "courseLb", 0);
-			SetNup(f, 0, 9); SetNup(f, 1, 30); SetNup(f, 2, 9); SetNup(f, 3, 30);
+			SetNup(f, 0, 13); SetNup(f, 1, 45);
 			SetCheck(f, "chkR2", false);
 			string r = (string)f.GetType().GetMethod("ValidateStart", NP).Invoke(f, null);
 			return (r == null, "ValidateStart=" + (r ?? "null"));
 		});
 
-		// --- 6. the start path uses the SAME parser rule: Form1.ParseCondition(ConditionString(slot))
-		//        returns null for start>end, and ValidateStart() blocks in lockstep. ---
-		Case("start-path rule == ParseCondition(ConditionString) (start>end)", f =>
+		// --- 6. persistence and parse agree: ConditionString(1) is the canonical 4 fields
+		//        and ParseCondition succeeds while ValidateStart() passes. ---
+		Case("ConditionString(1) is 4 fields and parses; ValidateStart null in lockstep", f =>
 		{
 			SetCourse(f, "courseLb", 0);
-			SetNup(f, 0, 13); SetNup(f, 1, 0); SetNup(f, 2, 12); SetNup(f, 3, 0);
+			SetNup(f, 0, 9); SetNup(f, 1, 5);
 			SetCheck(f, "chkR2", false);
 			string line = (string)f.GetType().GetMethod("ConditionString", NP).Invoke(f, new object[] { 1 });
 			object bi = f.GetType().GetMethod("ParseCondition", NP).Invoke(f, new object[] { line });
 			string r = (string)f.GetType().GetMethod("ValidateStart", NP).Invoke(f, null);
-			return (bi == null && r != null, "line=" + line + " parse=" + (bi == null ? "null" : "obj") + " validate=" + (r ?? "null"));
+			return (line.Split(',').Length == 4 && line.Split(',')[2] == "905" && bi != null && r == null,
+				"line=" + line + " parse=" + (bi == null ? "null" : "obj") + " validate=" + (r ?? "null"));
 		});
 
 		// --- 7. both builds: ID / password fields are editable and unmasked at startup;

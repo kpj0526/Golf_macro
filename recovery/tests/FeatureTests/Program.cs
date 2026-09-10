@@ -94,23 +94,9 @@ internal static class Program
 		var reqFallback = new bookInfo(0, "NA", 0, "20260521", 930, 2359, 0);
 		Expect("desiredTime falls back to startTime", reqFallback.desiredTime == 930, "desiredTime=" + reqFallback.desiredTime);
 
-		// ---- inclusive [start,end] window filter: outside slots are NEVER considered ----
-		NearestRange("in window: picks nearest to start", L(Row("0850", "설악"), Row("0930", "설악"), Row("1015", "설악")),
-			900, 1000, "설악", "09:30", 30);
-		NearestRange("earlier-than-start slot excluded even if closest",
-			L(Row("0855", "설악"), Row("0930", "설악")), 900, 1000, "설악", "09:30", 30);
-		NearestRange("later-than-end slot excluded even if closest",
-			L(Row("0930", "설악"), Row("1005", "설악")), 900, 1000, "설악", "09:30", 30);
-		NearestRange("slot exactly on the start boundary is included (inclusive)",
-			L(Row("0900", "설악"), Row("1030", "설악")), 900, 1000, "설악", "09:00", 0);
-		NearestRange("slot exactly on the end boundary is included (inclusive)",
-			L(Row("0730", "설악"), Row("1000", "설악")), 900, 1000, "설악", "10:00", 60);
-		NearestRange("tight window [09:00,09:00] matches only that minute",
-			L(Row("0855", "설악"), Row("0900", "설악"), Row("0905", "설악")), 900, 900, "설악", "09:00", 0);
-		NearestRangeNull("every slot outside the window -> null",
-			L(Row("0700", "설악"), Row("0800", "설악"), Row("1200", "설악")), 900, 1000, "설악");
-		NearestRange("window + starter filter combined",
-			L(Row("0930", "썬"), Row("0940", "설악"), Row("1010", "설악")), 900, 1000, "설악", "09:40", 40);
+		// no time window: a slot far from the desired time is still eligible (just farther)
+		Nearest("no window filter: far slot still eligible",
+			L(Row("0700", "설악"), Row("2000", "설악")), 900, "설악", "07:00", 120);
 	}
 
 	private static void Nearest(string name, List<IWebElement> rows, int desired, string starter, string wantTee, int wantDelta)
@@ -125,21 +111,6 @@ internal static class Program
 	private static void NearestNull(string name, List<IWebElement> rows, int desired, string starter)
 	{
 		var req = new bookInfo(0, starter, 0, "20260521", 0, 2359, desired);
-		var el = TeeSelector.PickNearest(rows, req, delegate { }, out string hhmm, out int _);
-		Expect(name, el == null, "chosen=" + (hhmm ?? "null"));
-	}
-
-	private static void NearestRange(string name, List<IWebElement> rows, int start, int end, string starter, string wantTee, int wantDelta)
-	{
-		var req = new bookInfo(0, starter, 0, "20260521", start, end); // desired falls back to start
-		var el = TeeSelector.PickNearest(rows, req, delegate { }, out string hhmm, out int delta);
-		Expect(name, el != null && hhmm == wantTee && delta == wantDelta,
-			"chosen=" + (hhmm ?? "null") + " delta=" + delta + " want " + wantTee + "/" + wantDelta);
-	}
-
-	private static void NearestRangeNull(string name, List<IWebElement> rows, int start, int end, string starter)
-	{
-		var req = new bookInfo(0, starter, 0, "20260521", start, end);
 		var el = TeeSelector.PickNearest(rows, req, delegate { }, out string hhmm, out int _);
 		Expect(name, el == null, "chosen=" + (hhmm ?? "null"));
 	}
@@ -189,42 +160,43 @@ internal static class Program
 
 	private static void ConditionParserTests()
 	{
-		// ---- 5-field: course,date,startHHMM,endHHMM,starter ----
-		var a = ConditionParser.Parse("설악썬밸리,20260521,0900,1130,설악", Courses, Starters);
-		Expect("5-field parses start/end",
-			a != null && a.course == 0 && a.date == "20260521" && a.startTime == 900 && a.endTime == 1130
-			&& a.desiredTime == 900 && a.starter == "설악" && a.starterIndex == 0, Dump(a));
-
-		var b = ConditionParser.Parse("여주썬밸리,2026-05-21,09:05,10:40,밸리", Courses, Starters);
-		Expect("5-field: separators stripped in date/start/end",
-			b != null && b.course == 3 && b.date == "20260521" && b.startTime == 905 && b.endTime == 1040 && b.starter == "밸리", Dump(b));
-
-		Expect("5-field: start == end is allowed", ConditionParser.Parse("설악썬밸리,20260521,0930,0930,NA", Courses, Starters) != null, "");
-		Expect("5-field: start > end -> null", ConditionParser.Parse("설악썬밸리,20260521,1200,1000,설악", Courses, Starters) == null, "");
-		Expect("5-field: end minute > 59 -> null", ConditionParser.Parse("설악썬밸리,20260521,0900,1075,설악", Courses, Starters) == null, "");
-		Expect("5-field: start > 2359 -> null", ConditionParser.Parse("설악썬밸리,20260521,2400,2500,설악", Courses, Starters) == null, "");
-
-		// ---- legacy 4-field: single desired time -> migrate to [desired, desired+2h] ----
+		// ---- canonical 4-field: course,date,desiredHHMM,starter ----
 		var m = ConditionParser.Parse("설악썬밸리,20260521,905,설악", Courses, Starters);
-		Expect("legacy 4-field: start = desired",
-			m != null && m.startTime == 905 && m.desiredTime == 905, Dump(m));
-		Expect("legacy 4-field: end = desired + 2h (compat default)",
-			m != null && m.endTime == 1105, Dump(m));
+		Expect("4-field: desired parsed",
+			m != null && m.course == 0 && m.date == "20260521" && m.desiredTime == 905
+			&& m.starter == "설악" && m.starterIndex == 0, Dump(m));
+		Expect("4-field: startTime/endTime both equal desired",
+			m != null && m.startTime == 905 && m.endTime == 905, Dump(m));
 		var mLate = ConditionParser.Parse("설악썬밸리,20260521,2250,설악", Courses, Starters);
-		Expect("legacy 4-field: end clamps to 23:59",
-			mLate != null && mLate.startTime == 2250 && mLate.endTime == 2359, Dump(mLate));
+		Expect("4-field: no window / no clamp",
+			mLate != null && mLate.desiredTime == 2250 && mLate.endTime == 2250, Dump(mLate));
+		var sep = ConditionParser.Parse("여주썬밸리,2026-05-21,09:05,밸리", Courses, Starters);
+		Expect("4-field: separators stripped",
+			sep != null && sep.course == 3 && sep.date == "20260521" && sep.desiredTime == 905 && sep.starter == "밸리", Dump(sep));
 
-		var c = ConditionParser.Parse("UnknownCourse,20260521,0900,1100,NA", Courses, Starters);
+		// ---- 5-field value from an older build: read the start field only, ignore the end ----
+		var a = ConditionParser.Parse("설악썬밸리,20260521,0900,1130,설악", Courses, Starters);
+		Expect("5-field: start read as desired, end ignored",
+			a != null && a.course == 0 && a.date == "20260521" && a.desiredTime == 900
+			&& a.startTime == 900 && a.endTime == 900 && a.starter == "설악", Dump(a));
+		var gt = ConditionParser.Parse("설악썬밸리,20260521,1200,1000,설악", Courses, Starters);
+		Expect("5-field: obsolete end field ignored even when start > 'end'", gt != null && gt.desiredTime == 1200, Dump(gt));
+		var be = ConditionParser.Parse("설악썬밸리,20260521,0900,1075,설악", Courses, Starters);
+		Expect("5-field: invalid end field ignored", be != null && be.desiredTime == 900, Dump(be));
+		Expect("5-field: invalid start/desired field -> null",
+			ConditionParser.Parse("설악썬밸리,20260521,2400,2500,설악", Courses, Starters) == null, "");
+
+		var c = ConditionParser.Parse("UnknownCourse,20260521,0900,NA", Courses, Starters);
 		Expect("unknown course -> index 0", c != null && c.course == 0, Dump(c));
-		var d = ConditionParser.Parse("설악썬밸리,20260521,0900,1100,없는스타터", Courses, Starters);
+		var d = ConditionParser.Parse("설악썬밸리,20260521,0900,없는스타터", Courses, Starters);
 		Expect("unknown starter -> index -1 but still parses", d != null && d.starterIndex == -1 && d.starter == "없는스타터", Dump(d));
 
 		Expect("blank -> null", ConditionParser.Parse("", Courses, Starters) == null, "");
 		Expect("unset placeholder -> null", ConditionParser.Parse("<조건 미설정>", Courses, Starters) == null, "");
 		Expect("too few fields (3) -> null", ConditionParser.Parse("설악썬밸리,20260521,900", Courses, Starters) == null, "");
-		Expect("bad date length -> null", ConditionParser.Parse("설악썬밸리,202605,0900,1100,설악", Courses, Starters) == null, "");
-		Expect("non-numeric start -> null", ConditionParser.Parse("설악썬밸리,20260521,abc,1100,설악", Courses, Starters) == null, "");
-		Expect("null course-name table tolerated", ConditionParser.Parse("설악썬밸리,20260521,0900,1100,설악", null, null) != null, "");
+		Expect("bad date length -> null", ConditionParser.Parse("설악썬밸리,202605,0900,설악", Courses, Starters) == null, "");
+		Expect("non-numeric desired -> null", ConditionParser.Parse("설악썬밸리,20260521,abc,설악", Courses, Starters) == null, "");
+		Expect("null course-name table tolerated", ConditionParser.Parse("설악썬밸리,20260521,0900,설악", null, null) != null, "");
 	}
 
 	// ---------------------------------------------------------------- group 4

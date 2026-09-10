@@ -6,14 +6,12 @@ using OpenQA.Selenium;
 namespace booking;
 
 /// <summary>
-/// Recovery feature: from the available tee rows, first discard every slot OUTSIDE the
-/// inclusive [startTime, endTime] window, then choose the remaining tee whose minute-of-day
-/// is closest to the window start.
-///   Filter      : startMinutes &lt;= slotMinutes &lt;= endMinutes  (out-of-range never considered).
-///   Primary key : smallest absolute minute difference from the window start.
+/// Recovery feature: from every available tee row (for the requested starter), choose the
+/// tee whose minute-of-day is closest to the desired time.
+///   Primary key : smallest absolute minute difference from the desired time.
 ///   Tie-break 1 : earlier tee time.
 ///   Tie-break 2 : lower position in the row list (stable).
-/// The window, the chosen slot and the delta are logged.
+/// The desired time, the chosen slot and the delta are logged.
 /// </summary>
 internal static class TeeSelector
 {
@@ -33,22 +31,14 @@ internal static class TeeSelector
 		chosenHHmm = null;
 		deltaMinutes = -1;
 
-		// inclusive selectable window
-		int lo = ToMinutes(req.startTime);
-		int hi = ToMinutes(req.endTime);
-		if (hi < lo)
-		{
-			hi = lo;
-		}
-		// nearest-time target = window start, clamped into the window
-		int target = Math.Max(lo, Math.Min(hi, ToMinutes(req.desiredTime)));
+		// nearest-time target = the desired time (no selectable window / range filter)
+		int target = ToMinutes(req.desiredTime);
 
 		IWebElement best = null;
 		int bestDelta = int.MaxValue;
 		int bestMin = int.MaxValue;
 		int bestIdx = int.MaxValue;
 		int considered = 0;
-		int outOfRange = 0;
 		bool tieBrokenByEarlier = false;
 
 		for (int i = 0; i < rows.Count; i++)
@@ -61,11 +51,6 @@ internal static class TeeSelector
 				!string.IsNullOrEmpty(starter) && starter != req.starter)
 			{
 				continue;
-			}
-			if (mins < lo || mins > hi)
-			{
-				outOfRange++;
-				continue; // outside the configured window -> never considered
 			}
 			considered++;
 			int d = Math.Abs(mins - target);
@@ -94,19 +79,18 @@ internal static class TeeSelector
 
 		if (best == null)
 		{
-			log("tee-select: no eligible tee in window [" + FromMinutes(lo) + "-" + FromMinutes(hi) + "]"
-				+ " (rows=" + rows.Count + ", outOfRange=" + outOfRange + ", starter=" + req.starter + ")");
+			log("tee-select: no eligible tee (rows=" + rows.Count + ", starter=" + req.starter + ")");
 			return null;
 		}
 
 		chosenHHmm = FromMinutes(bestMin);
 		deltaMinutes = bestDelta;
-		log("tee-select: window=[" + FromMinutes(lo) + "-" + FromMinutes(hi) + "] target=" + FromMinutes(target)
+		log("tee-select: desired=" + FromMinutes(target)
 			+ " chosen=" + chosenHHmm
 			+ " deltaMin=" + bestDelta
-			+ " inWindowRows=" + considered + " outOfRange=" + outOfRange
+			+ " eligibleRows=" + considered
 			+ (tieBrokenByEarlier ? " [equal-distance -> chose the EARLIER tee time]" : "")
-			+ " (rule: inside window, then min |delta| from start, then earlier time, then list order)");
+			+ " (rule: min |delta| from desired, then earlier time, then list order)");
 		return best;
 	}
 
