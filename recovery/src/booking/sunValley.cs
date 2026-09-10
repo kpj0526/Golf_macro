@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.Diagnostics;
 using System.Text.RegularExpressions;
 using System.Threading;
 using OpenQA.Selenium;
@@ -21,6 +22,13 @@ internal class sunValley : club
 	private bool lastHistoryStrictConfirmed;
 
 	private const string loginUrl = "https://www.sunvalley.co.kr/member/login?returnURL=/reservation/golf";
+
+	// Upper bounds rather than fixed delays: fast PCs continue immediately, while
+	// slower PCs get time for the browser and site to reach the required state.
+	private const int LoginFormTimeoutSeconds = 45;
+	private const int LoginCompletionTimeoutSeconds = 60;
+	private const int ReservationPageTimeoutSeconds = 45;
+	private const int ConfirmationDialogTimeoutSeconds = 20;
 
 	private string[] clubs = new string[4] { "https://www.sunvalley.co.kr/reservation/golf?sel=J21", "https://www.sunvalley.co.kr/reservation/golf?sel=J23", "https://www.sunvalley.co.kr/reservation/golf?sel=J24", "https://www.sunvalley.co.kr/reservation/golf?sel=J25" };
 
@@ -99,6 +107,8 @@ internal class sunValley : club
 	public override bool login(Form1 _frm)
 	{
 		frm = _frm;
+		return LoginWithStateWait();
+
 		try
 		{
 			((WebDriver)drv).Manage().Timeouts().ImplicitWait = TimeSpan.FromSeconds(1L);
@@ -132,6 +142,128 @@ internal class sunValley : club
 		return true;
 	}
 
+	// Login must be proven by the post-login page state.  The legacy implementation
+	// waited a fixed one second and then treated an absent alert as success, which
+	// fails silently on slow PCs and leaves only "Login Failed" in the outer log.
+	private bool LoginWithStateWait()
+	{
+		IWebDriver driver2 = (IWebDriver)(object)drv;
+		Stopwatch stopwatch = Stopwatch.StartNew();
+		try
+		{
+			((WebDriver)drv).Manage().Timeouts().ImplicitWait = TimeSpan.Zero;
+			frm.logtxtBox("T # " + threadIndex + " LOGIN: opening page; waiting up to " + LoginFormTimeoutSeconds + "s for usable fields.");
+			((WebDriver)drv).Navigate().GoToUrl(LoginUrl());
+			lock (WebDriverExtensions.lockObject)
+			{
+				if (!WaitForLoginForm(driver2, out IWebElement idBox, out IWebElement passwordBox, out IWebElement loginButton))
+				{
+					LoginFailure("login-form-timeout", "ID/password/login button did not become usable within " + LoginFormTimeoutSeconds + "s");
+					return false;
+				}
+				idBox.Clear();
+				passwordBox.Clear();
+				idBox.SendKeys(id);
+				passwordBox.SendKeys(pwd);
+				frm.logtxtBox("T # " + threadIndex + " LOGIN: form ready after " + stopwatch.ElapsedMilliseconds + "ms; submitting.");
+				WebDriverExtensions.clickLock(loginButton);
+				if (!WaitForAuthenticatedPage(driver2, out string reason))
+				{
+					LoginFailure("login-not-completed", reason);
+					return false;
+				}
+				frm.logtxtBox("T # " + threadIndex + " LOGIN: authenticated page confirmed after " + stopwatch.ElapsedMilliseconds + "ms.");
+			}
+			return true;
+		}
+		catch (Exception ex)
+		{
+			LoginFailure("login-exception", ex.GetType().Name + ": " + ex.Message);
+			return false;
+		}
+	}
+
+	private bool WaitForLoginForm(IWebDriver driver2, out IWebElement idBox, out IWebElement passwordBox, out IWebElement loginButton)
+	{
+		idBox = null;
+		passwordBox = null;
+		loginButton = null;
+		DateTime deadline = DateTime.Now.AddSeconds(LoginFormTimeoutSeconds);
+		while (!frm.stopClicked && DateTime.Now < deadline)
+		{
+			try
+			{
+				ReadOnlyCollection<IWebElement> ids = driver2.FindElements(By.Id("usrId"));
+				ReadOnlyCollection<IWebElement> passwords = driver2.FindElements(By.Id("usrPwd"));
+				ReadOnlyCollection<IWebElement> buttons = driver2.FindElements(By.Id("fnLogin"));
+				if (ids.Count > 0 && passwords.Count > 0 && buttons.Count > 0
+					&& ids[0].Displayed && ids[0].Enabled
+					&& passwords[0].Displayed && passwords[0].Enabled
+					&& buttons[0].Displayed && buttons[0].Enabled)
+				{
+					idBox = ids[0];
+					passwordBox = passwords[0];
+					loginButton = buttons[0];
+					return true;
+				}
+			}
+			catch (Exception)
+			{
+				// The document can be replaced while loading; poll the next state.
+			}
+			Thread.Sleep(150);
+		}
+		return false;
+	}
+
+	private bool WaitForAuthenticatedPage(IWebDriver driver2, out string reason)
+	{
+		reason = "authentication did not complete within " + LoginCompletionTimeoutSeconds + "s";
+		DateTime deadline = DateTime.Now.AddSeconds(LoginCompletionTimeoutSeconds);
+		while (!frm.stopClicked && DateTime.Now < deadline)
+		{
+			try
+			{
+				IAlert alert = null;
+				try { alert = driver2.SwitchTo().Alert(); } catch (NoAlertPresentException) { }
+				if (alert != null)
+				{
+					string message = alert.Text ?? "";
+					alert.Accept();
+					if (message.Contains("환영"))
+						frm.logtxtBox("T # " + threadIndex + " LOGIN: success alert received; waiting for authenticated page.");
+					else
+					{
+						reason = "site alert: " + message;
+						return false;
+					}
+				}
+
+				string url = BookingDiagnostics.SafeUrl(driver2) ?? "";
+				bool stillShowingLoginForm = driver2.FindElements(By.Id("usrId")).Count > 0
+					|| driver2.FindElements(By.Id("usrPwd")).Count > 0;
+				if (!stillShowingLoginForm && url.IndexOf("/member/login", StringComparison.OrdinalIgnoreCase) < 0)
+					return true;
+			}
+			catch (Exception ex)
+			{
+				reason = "while waiting for login completion: " + ex.GetType().Name + ": " + ex.Message;
+			}
+			Thread.Sleep(150);
+		}
+		if (frm.stopClicked)
+			reason = "stopped by user while waiting for login completion";
+		return false;
+	}
+
+	private void LoginFailure(string kind, string reason)
+	{
+		IWebDriver driver2 = (IWebDriver)(object)drv;
+		string url = BookingDiagnostics.SafeUrl(driver2) ?? "(unavailable)";
+		frm.logtxtBox("T # " + threadIndex + " LOGIN FAILED [" + kind + "]: " + reason + " url=" + url);
+		BookingDiagnostics.Capture(drv, diagnosticsDir, kind, "reason=" + reason + " url=" + url);
+	}
+
 	public override bool prepareReservation2Session(Form1 _frm, bool sameAccount)
 	{
 		frm = _frm;
@@ -151,7 +283,7 @@ internal class sunValley : club
 			frm.logtxtBox("예약 2: 기존 계정의 서버 로그아웃을 실행합니다.");
 			((WebDriver)drv).Navigate().GoToUrl("https://www.sunvalley.co.kr/member/logout");
 			((WebDriver)drv).Navigate().GoToUrl(LoginUrl());
-			for (int attempt = 0; attempt < 20; attempt++)
+			for (int attempt = 0; attempt < 180; attempt++)
 			{
 				if (driver2.FindElements(By.Id("usrId")).Count > 0 && driver2.FindElements(By.Id("usrPwd")).Count > 0)
 				{
@@ -193,7 +325,7 @@ internal class sunValley : club
 		// Prefer the site's course-code link and fall back to its visible tile label.
 		string code = courseCodes[req.course];
 		string name = courseNames[req.course];
-		DateTime deadline = DateTime.Now.AddSeconds(10.0);
+		DateTime deadline = DateTime.Now.AddSeconds(ReservationPageTimeoutSeconds);
 		bool selectionClicked = false;
 		while (DateTime.Now < deadline && !frm.stopClicked)
 		{
@@ -361,7 +493,7 @@ internal class sunValley : club
 
 		while (!frm.stopClicked)
 		{
-			IWebElement dateCell = ((IWebDriver)(object)drv).FindElement(By.XPath(dateCellXPath), 5);
+			IWebElement dateCell = ((IWebDriver)(object)drv).FindElement(By.XPath(dateCellXPath), 30);
 			BookingPageState state = BookingDiagnostics.Classify((IWebDriver)(object)drv, dateCell, out lastTitle, out lastUrl);
 
 			// --- unrecoverable: not on the reservation page (session lost / entry-flow change) ---
@@ -480,7 +612,7 @@ internal class sunValley : club
 				{
 					Thread.Sleep(50);
 				}
-				ReadOnlyCollection<IWebElement> teeButtons = ((IWebDriver)(object)drv).FindElements(By.XPath("//*[@class='btn btn-res']"));
+				ReadOnlyCollection<IWebElement> teeButtons = ((IWebDriver)(object)drv).FindElements(By.XPath("//*[@class='btn btn-res']"), 10);
 				if (teeButtons == null || teeButtons.Count == 0)
 				{
 					BookingDiagnostics.Capture(drv, diagnosticsDir, "no-tee-buttons",
@@ -646,7 +778,7 @@ internal class sunValley : club
 			((WebDriver)drv).ExecuteScript("arguments[0].click();", new object[1] { btn });
 			Thread.Sleep(100);
 			frm.logtxtBox("T # " + threadIndex + " submit button clicked");
-			IWebElement val = ((IWebDriver)(object)drv).FindElement(By.XPath("//*[@id='golfTimeDiv2']/div[3]/div/div[1]/button"));
+			IWebElement val = ((IWebDriver)(object)drv).FindElement(By.XPath("//*[@id='golfTimeDiv2']/div[3]/div/div[1]/button"), ConfirmationDialogTimeoutSeconds);
 			if (val == null)
 			{
 				// Confirm UI changed / did not open. We have not clicked "확정" so a booking is
