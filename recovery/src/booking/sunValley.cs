@@ -483,13 +483,25 @@ internal class sunValley : club
 	private bool WaitForSingleCheck(DateTime checkAt, string rule)
 	{
 		frm.logtxtBox("T # " + threadIndex + " waiting until " + checkAt.ToString("yyyy-MM-dd HH:mm:ss")
-			+ " (" + rule + "; one calendar load only)");
+			+ " (" + rule + "; reservation page preloaded)");
 		while (!frm.stopClicked && DateTime.Now < checkAt)
 		{
 			double remaining = (checkAt - DateTime.Now).TotalMilliseconds;
 			Thread.Sleep((int)Math.Max(1, Math.Min(30000, Math.Ceiling(remaining))));
 		}
 		return !frm.stopClicked;
+	}
+
+	private bool WaitForReservationCalendar(string dateCellXPath)
+	{
+		DateTime deadline = DateTime.Now.AddSeconds(ReservationPageTimeoutSeconds);
+		while (DateTime.Now < deadline && !frm.stopClicked)
+		{
+			if (((IWebDriver)(object)drv).FindElements(By.XPath(dateCellXPath)).Count != 0)
+				return true;
+			Thread.Sleep(200);
+		}
+		return false;
 	}
 
 	private BookOutcome BookCore(bookInfo bookInfo2)
@@ -504,18 +516,45 @@ internal class sunValley : club
 		string scheduleRule = null;
 		// Diagnostic runs must exercise navigation immediately; this build cannot submit.
 		bool singleScheduledCheck = !dummyTestMode && !diagnosticMode && SunValleySchedule.TryGetSingleCheckTime(bookInfo2, out checkAt, out scheduleRule);
-		if (singleScheduledCheck && !WaitForSingleCheck(checkAt, scheduleRule))
-		{
-			outcome.Result = OpResult.Fail;
-			outcome.Detail = "stopClicked while waiting for scheduled single check";
-			return outcome;
-		}
 
 		string dateCellXPath;
 		try
 		{
 			dateCellXPath = setDatePath(bookInfo2.date).Item2;
-			if (!NavigateToReservation(bookInfo2, dateCellXPath))
+			bool preloaded = false;
+			if (singleScheduledCheck && DateTime.Now < checkAt)
+			{
+				DateTime preloadAt = checkAt.AddMinutes(-1);
+				if (!WaitForSingleCheck(preloadAt, scheduleRule + "; preload one minute before opening"))
+				{
+					outcome.Result = OpResult.Fail;
+					outcome.Detail = "stopClicked while waiting to preload scheduled reservation";
+					return outcome;
+				}
+				frm.logtxtBox("T # " + threadIndex + " preloading reservation calendar one minute before opening.");
+				if (!NavigateToReservation(bookInfo2, dateCellXPath))
+				{
+					outcome.Result = OpResult.FalalError;
+					outcome.Detail = "course picker did not open the requested reservation calendar for preload";
+					return outcome;
+				}
+				if (!WaitForSingleCheck(checkAt, scheduleRule))
+				{
+					outcome.Result = OpResult.Fail;
+					outcome.Detail = "stopClicked while waiting for scheduled reservation opening";
+					return outcome;
+				}
+				frm.logtxtBox("T # " + threadIndex + " opening time reached; refreshing preloaded reservation calendar.");
+				((WebDriver)drv).Navigate().Refresh();
+				if (!WaitForReservationCalendar(dateCellXPath))
+				{
+					outcome.Result = OpResult.FalalError;
+					outcome.Detail = "preloaded reservation calendar did not return after opening refresh";
+					return outcome;
+				}
+				preloaded = true;
+			}
+			if (!preloaded && !NavigateToReservation(bookInfo2, dateCellXPath))
 			{
 				outcome.Result = OpResult.FalalError;
 				outcome.Detail = "course picker did not open the requested reservation calendar";
