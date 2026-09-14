@@ -44,9 +44,36 @@ internal static class Program
 		Section("9. Legacy Windows-login auto-run cleanup (HKCU Run value removal only)");
 		LegacyAutoRunCleanupTests();
 
+		Section("10. Two-account execution policy (isolated parallel sessions)");
+		ReservationExecutionPolicyTests();
+
 		Console.WriteLine();
 		Console.WriteLine("================ " + _pass + " passed, " + _fail + " failed ================");
 		Environment.Exit(_fail == 0 ? 0 : 1);
+	}
+
+	private static void ReservationExecutionPolicyTests()
+	{
+		var accounts = new CredentialStore.AccountData();
+		accounts.Id[0] = "first-account";
+		accounts.Id[1] = "second-account";
+		accounts.Res1Slot = 0;
+		accounts.Res2Slot = 1;
+		Expect("different account IDs -> parallel isolated sessions",
+			ReservationExecutionPolicy.UseParallelSessions(true, accounts), "");
+
+		accounts.Res2Slot = 0;
+		Expect("same selected account -> sequential session",
+			!ReservationExecutionPolicy.UseParallelSessions(true, accounts), "");
+
+		accounts.Res2Slot = 1;
+		accounts.Id[1] = "FIRST-ACCOUNT";
+		Expect("same ID in two slots -> sequential session",
+			!ReservationExecutionPolicy.UseParallelSessions(true, accounts), "");
+
+		accounts.Id[1] = "second-account";
+		Expect("one reservation -> sequential session",
+			!ReservationExecutionPolicy.UseParallelSessions(false, accounts), "");
 	}
 
 	// ---------------------------------------------------------------- group 9

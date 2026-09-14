@@ -124,6 +124,8 @@ public class Form1 : Form
 
 	private bool gotStart = true;
 
+	private bool parallelReservations;
+
 	private Tuple<string, string> idPwdStartup;
 
 	private bool noEventHandler;
@@ -161,7 +163,7 @@ public class Form1 : Form
 		expire = false;
 	}
 
-	private club initClass(ChromeDriver drv, int threadIndex)
+	private club initClass(ChromeDriver drv, int threadIndex, string accountId = null, string accountPassword = null, List<bookInfo> requests = null)
 	{
 		club club2 = null;
 		Trace.WriteLine("initClass");
@@ -250,7 +252,12 @@ public class Form1 : Form
 			club2 = new balios(managerId);
 		}
 		Trace.WriteLine("Init2");
-		club2.setValues(drv, threadIndex, coreData, bookList, ref workPool);
+		club2.setValues(drv, threadIndex, coreData, requests ?? bookList, ref workPool);
+		if (accountId != null)
+		{
+			club2.id = accountId;
+			club2.pwd = accountPassword ?? "";
+		}
 		return club2;
 	}
 
@@ -595,8 +602,11 @@ public class Form1 : Form
 		Trace.WriteLine("QA AUTO-START: Reservation 1 configuration accepted; initializing ChromeDriver.");
 		workPool = new dayPool(releaseVersion, bookList.Count);
 
-		// 순차 정책 -> 브라우저/워커 1개
-		coreData.threadNum = 1;
+		parallelReservations = ReservationExecutionPolicy.UseParallelSessions(bookList.Count == 2, coreData.accounts);
+		coreData.threadNum = parallelReservations ? 2 : 1;
+		logtxtBox(parallelReservations
+			? "예약 1·2의 계정 ID가 달라 분리된 크롬 창 2개로 동시 실행합니다."
+			: "같은 계정이거나 예약이 하나여서 크롬 창 1개로 순차 실행합니다.");
 		driver = (ChromeDriver[])(object)new ChromeDriver[coreData.threadNum];
 		DisableIncompatibleLocalChromeDriver();
 		string directoryName = Path.GetDirectoryName(EnsureChromeDriverReadyInteractive());
@@ -625,9 +635,10 @@ public class Form1 : Form
 		WebDriverExtensions.delay1 = coreData.lockDelay;
 		WebDriverExtensions.frm = this;
 		ts = new Task<bool>[coreData.threadNum];
+		Func<object, bool> worker = parallelReservations ? bookOneInDedicatedSession : bookMain;
 		for (int k = 0; k < ts.Length; k++)
 		{
-			ts[k] = new Task<bool>(bookMain, k, cts[k].Token);
+			ts[k] = new Task<bool>(worker, k, cts[k].Token);
 			ts[k].Start();
 			Thread.Sleep(100);
 		}
@@ -814,6 +825,47 @@ public class Form1 : Form
 	//   예약 1의 마감/오픈전/시간없음/진단 no-submit은 예약 2를 막지 않는다.
 	//   브라우저·페이지 이동 오류일 때만 공유 세션이 신뢰할 수 없으므로 예약 2를 중단한다.
 	// ---------------------------------------------------------------------------
+	private bool bookOneInDedicatedSession(object index)
+	{
+		int reservationIndex = (int)index;
+		ChromeDriver val = driver[reservationIndex];
+		if (reservationIndex < 0 || reservationIndex >= bookList.Count)
+		{
+			SafeQuit(val);
+			return false;
+		}
+
+		int slot = reservationIndex == 0
+			? coreData.accounts.ClampSlot(coreData.accounts.Res1Slot)
+			: coreData.accounts.ClampSlot(coreData.accounts.Res2Slot);
+		string accountId = coreData.accounts.Id[slot] ?? "";
+		string accountPassword = coreData.accounts.Pw[slot] ?? "";
+		club client;
+		try
+		{
+			client = initClass(val, reservationIndex, accountId, accountPassword);
+			logtxtBox("Parallel reservation " + (reservationIndex + 1) + " login start (isolated browser session).");
+			if (!client.login(this))
+			{
+				logtxtBox("Parallel reservation " + (reservationIndex + 1) + " login failed.");
+				SafeQuit(val);
+				return false;
+			}
+			logtxtBox("========== Parallel reservation " + (reservationIndex + 1) + " ========== " + bookList[reservationIndex]);
+			BookOutcome outcome = client.bookRequest(bookList[reservationIndex]);
+			logtxtBox(DescribeOutcome(reservationIndex + 1, outcome));
+			logtxtBox("Parallel reservation " + (reservationIndex + 1) + " complete: " + outcome.GateReason(client.diagnosticMode));
+			SafeQuit(val);
+			return !IsInfrastructureError(outcome);
+		}
+		catch (Exception ex)
+		{
+			logtxtBox("Parallel reservation " + (reservationIndex + 1) + " failed: " + ex.Message);
+			SafeQuit(val);
+			return false;
+		}
+	}
+
 	private bool bookMain(object index)
 	{
 		int num = (int)index;
@@ -878,9 +930,8 @@ public class Form1 : Form
 
 		// The two tabs share browser cookies.  Reuse a same-account session; otherwise
 		// explicitly leave it and verify a fresh login form before signing in.
-		int r1slot = coreData.accounts.ClampSlot(coreData.accounts.Res1Slot);
 		int r2slot = coreData.accounts.ClampSlot(coreData.accounts.Res2Slot);
-		bool sameAccount = r1slot == r2slot;
+		bool sameAccount = !ReservationExecutionPolicy.UseParallelSessions(true, coreData.accounts);
 		if (!client.prepareReservation2Session(this, sameAccount))
 		{
 			logtxtBox("예약 2 세션 전환 실패. 실행 종료.");
