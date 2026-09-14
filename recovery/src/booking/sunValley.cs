@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.Diagnostics;
 using System.Text.RegularExpressions;
 using System.Threading;
 using OpenQA.Selenium;
@@ -21,6 +22,16 @@ internal class sunValley : club
 	private bool lastHistoryStrictConfirmed;
 
 	private const string loginUrl = "https://www.sunvalley.co.kr/member/login?returnURL=/reservation/golf";
+
+	// Upper bounds rather than fixed delays: fast PCs continue immediately, while
+	// slower PCs get time for the browser and site to reach the required state.
+	private const int LoginFormTimeoutSeconds = 45;
+	private const int LoginCompletionTimeoutSeconds = 60;
+	private const int ReservationPageTimeoutSeconds = 45;
+	private const int ConfirmationDialogTimeoutSeconds = 20;
+	private const int PageContentTimeoutSeconds = 20;
+	private const int CompletionAlertTimeoutSeconds = 20;
+	private const int MaxConcurrentReservationAttempts = 5;
 
 	private string[] clubs = new string[4] { "https://www.sunvalley.co.kr/reservation/golf?sel=J21", "https://www.sunvalley.co.kr/reservation/golf?sel=J23", "https://www.sunvalley.co.kr/reservation/golf?sel=J24", "https://www.sunvalley.co.kr/reservation/golf?sel=J25" };
 
@@ -99,6 +110,8 @@ internal class sunValley : club
 	public override bool login(Form1 _frm)
 	{
 		frm = _frm;
+		return LoginWithStateWait();
+
 		try
 		{
 			((WebDriver)drv).Manage().Timeouts().ImplicitWait = TimeSpan.FromSeconds(1L);
@@ -132,6 +145,172 @@ internal class sunValley : club
 		return true;
 	}
 
+	// Login must be proven by the post-login page state.  The legacy implementation
+	// waited a fixed one second and then treated an absent alert as success, which
+	// fails silently on slow PCs and leaves only "Login Failed" in the outer log.
+	private bool LoginWithStateWait()
+	{
+		IWebDriver driver2 = (IWebDriver)(object)drv;
+		Stopwatch stopwatch = Stopwatch.StartNew();
+		try
+		{
+			((WebDriver)drv).Manage().Timeouts().ImplicitWait = TimeSpan.Zero;
+			frm.logtxtBox("T # " + threadIndex + " LOGIN: opening page; waiting up to " + LoginFormTimeoutSeconds + "s for usable fields.");
+			((WebDriver)drv).Navigate().GoToUrl(LoginUrl());
+			lock (WebDriverExtensions.lockObject)
+			{
+				if (!WaitForLoginForm(driver2, out IWebElement idBox, out IWebElement passwordBox, out IWebElement loginButton))
+				{
+					LoginFailure("login-form-timeout", "ID/password/login button did not become usable within " + LoginFormTimeoutSeconds + "s");
+					return false;
+				}
+				idBox.Clear();
+				passwordBox.Clear();
+				idBox.SendKeys(id);
+				passwordBox.SendKeys(pwd);
+				frm.logtxtBox("T # " + threadIndex + " LOGIN: form ready after " + stopwatch.ElapsedMilliseconds + "ms; submitting.");
+				WebDriverExtensions.clickLock(loginButton);
+				if (!WaitForAuthenticatedPage(driver2, out string reason))
+				{
+					LoginFailure("login-not-completed", reason);
+					return false;
+				}
+				frm.logtxtBox("T # " + threadIndex + " LOGIN: authenticated page confirmed after " + stopwatch.ElapsedMilliseconds + "ms.");
+			}
+			return true;
+		}
+		catch (Exception ex)
+		{
+			LoginFailure("login-exception", ex.GetType().Name + ": " + ex.Message);
+			return false;
+		}
+	}
+
+	private bool WaitForLoginForm(IWebDriver driver2, out IWebElement idBox, out IWebElement passwordBox, out IWebElement loginButton)
+	{
+		idBox = null;
+		passwordBox = null;
+		loginButton = null;
+		DateTime deadline = DateTime.Now.AddSeconds(LoginFormTimeoutSeconds);
+		while (!frm.stopClicked && DateTime.Now < deadline)
+		{
+			try
+			{
+				ReadOnlyCollection<IWebElement> ids = driver2.FindElements(By.Id("usrId"));
+				ReadOnlyCollection<IWebElement> passwords = driver2.FindElements(By.Id("usrPwd"));
+				ReadOnlyCollection<IWebElement> buttons = driver2.FindElements(By.Id("fnLogin"));
+				if (ids.Count > 0 && passwords.Count > 0 && buttons.Count > 0
+					&& ids[0].Displayed && ids[0].Enabled
+					&& passwords[0].Displayed && passwords[0].Enabled
+					&& buttons[0].Displayed && buttons[0].Enabled)
+				{
+					idBox = ids[0];
+					passwordBox = passwords[0];
+					loginButton = buttons[0];
+					return true;
+				}
+			}
+			catch (Exception)
+			{
+				// The document can be replaced while loading; poll the next state.
+			}
+			Thread.Sleep(150);
+		}
+		return false;
+	}
+
+	private bool WaitForAuthenticatedPage(IWebDriver driver2, out string reason)
+	{
+		reason = "authentication did not complete within " + LoginCompletionTimeoutSeconds + "s";
+		DateTime deadline = DateTime.Now.AddSeconds(LoginCompletionTimeoutSeconds);
+		while (!frm.stopClicked && DateTime.Now < deadline)
+		{
+			try
+			{
+				IAlert alert = null;
+				try { alert = driver2.SwitchTo().Alert(); } catch (NoAlertPresentException) { }
+				if (alert != null)
+				{
+					string message = alert.Text ?? "";
+					alert.Accept();
+					if (message.Contains("환영"))
+						frm.logtxtBox("T # " + threadIndex + " LOGIN: success alert received; waiting for authenticated page.");
+					else
+					{
+						reason = "site alert: " + message;
+						return false;
+					}
+				}
+
+				string url = BookingDiagnostics.SafeUrl(driver2) ?? "";
+				bool stillShowingLoginForm = driver2.FindElements(By.Id("usrId")).Count > 0
+					|| driver2.FindElements(By.Id("usrPwd")).Count > 0;
+				if (!stillShowingLoginForm && url.IndexOf("/member/login", StringComparison.OrdinalIgnoreCase) < 0)
+					return true;
+			}
+			catch (Exception ex)
+			{
+				reason = "while waiting for login completion: " + ex.GetType().Name + ": " + ex.Message;
+			}
+			Thread.Sleep(150);
+		}
+		if (frm.stopClicked)
+			reason = "stopped by user while waiting for login completion";
+		return false;
+	}
+
+	private void LoginFailure(string kind, string reason)
+	{
+		IWebDriver driver2 = (IWebDriver)(object)drv;
+		string url = BookingDiagnostics.SafeUrl(driver2) ?? "(unavailable)";
+		frm.logtxtBox("T # " + threadIndex + " LOGIN FAILED [" + kind + "]: " + reason + " url=" + url);
+		BookingDiagnostics.Capture(drv, diagnosticsDir, kind, "reason=" + reason + " url=" + url);
+	}
+
+	// Wait for a replacement page to contain real HTML instead of assuming a fixed
+	// browser-rendering time.  This is used after history-page navigation.
+	private bool WaitForPageContent(IWebDriver driver2, int timeoutSeconds, out string page)
+	{
+		page = "";
+		DateTime deadline = DateTime.Now.AddSeconds(timeoutSeconds);
+		while (!frm.stopClicked && DateTime.Now < deadline)
+		{
+			try
+			{
+				page = driver2.PageSource ?? "";
+				if (page.Length >= 100)
+					return true;
+			}
+			catch (Exception)
+			{
+				// The navigation may still be replacing the document.
+			}
+			Thread.Sleep(150);
+		}
+		return false;
+	}
+
+	// Wait for a server response alert.  It deliberately does not accept the alert;
+	// the existing result handling below remains responsible for that decision.
+	private bool WaitForAlert(int timeoutSeconds)
+	{
+		IWebDriver driver2 = (IWebDriver)(object)drv;
+		DateTime deadline = DateTime.Now.AddSeconds(timeoutSeconds);
+		while (!frm.stopClicked && DateTime.Now < deadline)
+		{
+			try
+			{
+				driver2.SwitchTo().Alert();
+				return true;
+			}
+			catch (NoAlertPresentException)
+			{
+				Thread.Sleep(150);
+			}
+		}
+		return false;
+	}
+
 	public override bool prepareReservation2Session(Form1 _frm, bool sameAccount)
 	{
 		frm = _frm;
@@ -151,7 +330,7 @@ internal class sunValley : club
 			frm.logtxtBox("예약 2: 기존 계정의 서버 로그아웃을 실행합니다.");
 			((WebDriver)drv).Navigate().GoToUrl("https://www.sunvalley.co.kr/member/logout");
 			((WebDriver)drv).Navigate().GoToUrl(LoginUrl());
-			for (int attempt = 0; attempt < 20; attempt++)
+			for (int attempt = 0; attempt < 180; attempt++)
 			{
 				if (driver2.FindElements(By.Id("usrId")).Count > 0 && driver2.FindElements(By.Id("usrPwd")).Count > 0)
 				{
@@ -193,7 +372,7 @@ internal class sunValley : club
 		// Prefer the site's course-code link and fall back to its visible tile label.
 		string code = courseCodes[req.course];
 		string name = courseNames[req.course];
-		DateTime deadline = DateTime.Now.AddSeconds(10.0);
+		DateTime deadline = DateTime.Now.AddSeconds(ReservationPageTimeoutSeconds);
 		bool selectionClicked = false;
 		while (DateTime.Now < deadline && !frm.stopClicked)
 		{
@@ -263,9 +442,8 @@ internal class sunValley : club
 				catch (Exception)
 				{
 				}
-				Thread.Sleep(50);
 			}
-			return ((IWebDriver)(object)drv).FindElements(By.XPath("//*[@class='btn btn-res']"), 2);
+			return ((IWebDriver)(object)drv).FindElements(By.XPath("//*[@class='btn btn-res']"), 10);
 		}
 		catch (Exception)
 		{
@@ -305,13 +483,25 @@ internal class sunValley : club
 	private bool WaitForSingleCheck(DateTime checkAt, string rule)
 	{
 		frm.logtxtBox("T # " + threadIndex + " waiting until " + checkAt.ToString("yyyy-MM-dd HH:mm:ss")
-			+ " (" + rule + "; one calendar load only)");
+			+ " (" + rule + "; reservation page preloaded)");
 		while (!frm.stopClicked && DateTime.Now < checkAt)
 		{
 			double remaining = (checkAt - DateTime.Now).TotalMilliseconds;
 			Thread.Sleep((int)Math.Max(1, Math.Min(30000, Math.Ceiling(remaining))));
 		}
 		return !frm.stopClicked;
+	}
+
+	private bool WaitForReservationCalendar(string dateCellXPath)
+	{
+		DateTime deadline = DateTime.Now.AddSeconds(ReservationPageTimeoutSeconds);
+		while (DateTime.Now < deadline && !frm.stopClicked)
+		{
+			if (((IWebDriver)(object)drv).FindElements(By.XPath(dateCellXPath)).Count != 0)
+				return true;
+			Thread.Sleep(200);
+		}
+		return false;
 	}
 
 	private BookOutcome BookCore(bookInfo bookInfo2)
@@ -326,18 +516,45 @@ internal class sunValley : club
 		string scheduleRule = null;
 		// Diagnostic runs must exercise navigation immediately; this build cannot submit.
 		bool singleScheduledCheck = !dummyTestMode && !diagnosticMode && SunValleySchedule.TryGetSingleCheckTime(bookInfo2, out checkAt, out scheduleRule);
-		if (singleScheduledCheck && !WaitForSingleCheck(checkAt, scheduleRule))
-		{
-			outcome.Result = OpResult.Fail;
-			outcome.Detail = "stopClicked while waiting for scheduled single check";
-			return outcome;
-		}
 
 		string dateCellXPath;
 		try
 		{
 			dateCellXPath = setDatePath(bookInfo2.date).Item2;
-			if (!NavigateToReservation(bookInfo2, dateCellXPath))
+			bool preloaded = false;
+			if (singleScheduledCheck && DateTime.Now < checkAt)
+			{
+				DateTime preloadAt = checkAt.AddMinutes(-1);
+				if (!WaitForSingleCheck(preloadAt, scheduleRule + "; preload one minute before opening"))
+				{
+					outcome.Result = OpResult.Fail;
+					outcome.Detail = "stopClicked while waiting to preload scheduled reservation";
+					return outcome;
+				}
+				frm.logtxtBox("T # " + threadIndex + " preloading reservation calendar one minute before opening.");
+				if (!NavigateToReservation(bookInfo2, dateCellXPath))
+				{
+					outcome.Result = OpResult.FalalError;
+					outcome.Detail = "course picker did not open the requested reservation calendar for preload";
+					return outcome;
+				}
+				if (!WaitForSingleCheck(checkAt, scheduleRule))
+				{
+					outcome.Result = OpResult.Fail;
+					outcome.Detail = "stopClicked while waiting for scheduled reservation opening";
+					return outcome;
+				}
+				frm.logtxtBox("T # " + threadIndex + " opening time reached; refreshing preloaded reservation calendar.");
+				((WebDriver)drv).Navigate().Refresh();
+				if (!WaitForReservationCalendar(dateCellXPath))
+				{
+					outcome.Result = OpResult.FalalError;
+					outcome.Detail = "preloaded reservation calendar did not return after opening refresh";
+					return outcome;
+				}
+				preloaded = true;
+			}
+			if (!preloaded && !NavigateToReservation(bookInfo2, dateCellXPath))
 			{
 				outcome.Result = OpResult.FalalError;
 				outcome.Detail = "course picker did not open the requested reservation calendar";
@@ -358,10 +575,12 @@ internal class sunValley : club
 		int refreshCount = 0;
 		string lastTitle = null;
 		string lastUrl = null;
+		int concurrentReservationAttempts = 0;
+		HashSet<string> rejectedTeeTimes = new HashSet<string>(StringComparer.Ordinal);
 
 		while (!frm.stopClicked)
 		{
-			IWebElement dateCell = ((IWebDriver)(object)drv).FindElement(By.XPath(dateCellXPath), 5);
+			IWebElement dateCell = ((IWebDriver)(object)drv).FindElement(By.XPath(dateCellXPath), 30);
 			BookingPageState state = BookingDiagnostics.Classify((IWebDriver)(object)drv, dateCell, out lastTitle, out lastUrl);
 
 			// --- unrecoverable: not on the reservation page (session lost / entry-flow change) ---
@@ -476,11 +695,7 @@ internal class sunValley : club
 				{
 					WebDriverExtensions.clickLock(dateCell);
 				}
-				if (bookInfo2.course > 0)
-				{
-					Thread.Sleep(50);
-				}
-				ReadOnlyCollection<IWebElement> teeButtons = ((IWebDriver)(object)drv).FindElements(By.XPath("//*[@class='btn btn-res']"));
+				ReadOnlyCollection<IWebElement> teeButtons = ((IWebDriver)(object)drv).FindElements(By.XPath("//*[@class='btn btn-res']"), 10);
 				if (teeButtons == null || teeButtons.Count == 0)
 				{
 					BookingDiagnostics.Capture(drv, diagnosticsDir, "no-tee-buttons",
@@ -494,7 +709,7 @@ internal class sunValley : club
 				// --- nearest desired-time selection ---
 				string chosenHHmm;
 				int deltaMin;
-				IWebElement slot = TeeSelector.PickNearest(teeButtons, bookInfo2,
+				IWebElement slot = TeeSelector.PickNearest(teeButtons, bookInfo2, rejectedTeeTimes,
 					msg => frm.logtxtBox("T # " + threadIndex + " " + msg), out chosenHHmm, out deltaMin);
 				if (slot == null)
 				{
@@ -526,6 +741,26 @@ internal class sunValley : club
 				lastConfirmationId = null;
 				lastHistoryStrictConfirmed = false;
 				OpResult submitResult = tryReserve(slot, bookInfo2, chosenHHmm);
+				if (submitResult == OpResult.ConcurrentReservation)
+				{
+					rejectedTeeTimes.Add(chosenHHmm);
+					concurrentReservationAttempts++;
+					if (concurrentReservationAttempts < MaxConcurrentReservationAttempts)
+					{
+						frm.logtxtBox("T # " + threadIndex + " concurrent reservation rejected " + chosenHHmm
+							+ "; refreshing available tees for nearest retry " + (concurrentReservationAttempts + 1)
+							+ "/" + MaxConcurrentReservationAttempts + ".");
+						if (!NavigateToReservation(bookInfo2, dateCellXPath))
+						{
+							outcome.Result = OpResult.FalalError;
+							outcome.Detail = "reservation calendar did not reload for concurrent-reservation retry";
+							return outcome;
+						}
+						continue;
+					}
+					frm.logtxtBox("T # " + threadIndex + " concurrent reservation retries exhausted after "
+						+ MaxConcurrentReservationAttempts + " rejected nearest tee times.");
+				}
 				outcome.Result = submitResult;
 				outcome.Submitted = true;
 
@@ -608,8 +843,8 @@ internal class sunValley : club
 		try
 		{
 			((WebDriver)drv).Navigate().GoToUrl(url);
-			Thread.Sleep(800);
-			string page = ((IWebDriver)(object)drv).PageSource ?? "";
+			if (!WaitForPageContent((IWebDriver)(object)drv, PageContentTimeoutSeconds, out string page))
+				frm.logtxtBox("T # " + threadIndex + " reservation-history page did not finish loading within " + PageContentTimeoutSeconds + "s.");
 			string d = req.date;
 			string dDash = d.Substring(0, 4) + "-" + d.Substring(4, 2) + "-" + d.Substring(6, 2);
 			string dDot = d.Substring(0, 4) + "." + d.Substring(4, 2) + "." + d.Substring(6, 2);
@@ -644,9 +879,8 @@ internal class sunValley : club
 		try
 		{
 			((WebDriver)drv).ExecuteScript("arguments[0].click();", new object[1] { btn });
-			Thread.Sleep(100);
 			frm.logtxtBox("T # " + threadIndex + " submit button clicked");
-			IWebElement val = ((IWebDriver)(object)drv).FindElement(By.XPath("//*[@id='golfTimeDiv2']/div[3]/div/div[1]/button"));
+			IWebElement val = ((IWebDriver)(object)drv).FindElement(By.XPath("//*[@id='golfTimeDiv2']/div[3]/div/div[1]/button"), ConfirmationDialogTimeoutSeconds);
 			if (val == null)
 			{
 				// Confirm UI changed / did not open. We have not clicked "확정" so a booking is
@@ -658,13 +892,12 @@ internal class sunValley : club
 			{
 				WebDriverExtensions.clickLock(val);
 				frm.logtxtBox("T # " + threadIndex + " reserve button clicked " + DateTime.Now.ToString("HH:mm:ss.ffffff"));
-				Thread.Sleep(300);
+				WaitForAlert(CompletionAlertTimeoutSeconds);
 				string text;
 				try
 				{
 					text = ((WebDriver)drv).SwitchTo().Alert().Text;
 					((WebDriver)drv).SwitchTo().Alert().Accept();
-					Thread.Sleep(30);
 				}
 				catch (Exception alertEx)
 				{
@@ -678,6 +911,10 @@ internal class sunValley : club
 				}
 
 				frm.logtxtBox("T # " + threadIndex + " " + text);
+				if (text.Contains("\uB3D9\uC2DC\uC608\uC57D"))
+				{
+					return OpResult.ConcurrentReservation;
+				}
 				if (text.Contains("동일한 일자") || text.Contains("횟수를 초과"))
 				{
 					((WebDriver)drv).Navigate().Back();
