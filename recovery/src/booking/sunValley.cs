@@ -31,6 +31,7 @@ internal class sunValley : club
 	private const int ConfirmationDialogTimeoutSeconds = 20;
 	private const int PageContentTimeoutSeconds = 20;
 	private const int CompletionAlertTimeoutSeconds = 20;
+	private const int MaxConcurrentReservationAttempts = 5;
 
 	private string[] clubs = new string[4] { "https://www.sunvalley.co.kr/reservation/golf?sel=J21", "https://www.sunvalley.co.kr/reservation/golf?sel=J23", "https://www.sunvalley.co.kr/reservation/golf?sel=J24", "https://www.sunvalley.co.kr/reservation/golf?sel=J25" };
 
@@ -535,6 +536,8 @@ internal class sunValley : club
 		int refreshCount = 0;
 		string lastTitle = null;
 		string lastUrl = null;
+		int concurrentReservationAttempts = 0;
+		HashSet<string> rejectedTeeTimes = new HashSet<string>(StringComparer.Ordinal);
 
 		while (!frm.stopClicked)
 		{
@@ -667,7 +670,7 @@ internal class sunValley : club
 				// --- nearest desired-time selection ---
 				string chosenHHmm;
 				int deltaMin;
-				IWebElement slot = TeeSelector.PickNearest(teeButtons, bookInfo2,
+				IWebElement slot = TeeSelector.PickNearest(teeButtons, bookInfo2, rejectedTeeTimes,
 					msg => frm.logtxtBox("T # " + threadIndex + " " + msg), out chosenHHmm, out deltaMin);
 				if (slot == null)
 				{
@@ -699,6 +702,26 @@ internal class sunValley : club
 				lastConfirmationId = null;
 				lastHistoryStrictConfirmed = false;
 				OpResult submitResult = tryReserve(slot, bookInfo2, chosenHHmm);
+				if (submitResult == OpResult.ConcurrentReservation)
+				{
+					rejectedTeeTimes.Add(chosenHHmm);
+					concurrentReservationAttempts++;
+					if (concurrentReservationAttempts < MaxConcurrentReservationAttempts)
+					{
+						frm.logtxtBox("T # " + threadIndex + " concurrent reservation rejected " + chosenHHmm
+							+ "; refreshing available tees for nearest retry " + (concurrentReservationAttempts + 1)
+							+ "/" + MaxConcurrentReservationAttempts + ".");
+						if (!NavigateToReservation(bookInfo2, dateCellXPath))
+						{
+							outcome.Result = OpResult.FalalError;
+							outcome.Detail = "reservation calendar did not reload for concurrent-reservation retry";
+							return outcome;
+						}
+						continue;
+					}
+					frm.logtxtBox("T # " + threadIndex + " concurrent reservation retries exhausted after "
+						+ MaxConcurrentReservationAttempts + " rejected nearest tee times.");
+				}
 				outcome.Result = submitResult;
 				outcome.Submitted = true;
 
@@ -849,6 +872,10 @@ internal class sunValley : club
 				}
 
 				frm.logtxtBox("T # " + threadIndex + " " + text);
+				if (text.Contains("\uB3D9\uC2DC\uC608\uC57D"))
+				{
+					return OpResult.ConcurrentReservation;
+				}
 				if (text.Contains("동일한 일자") || text.Contains("횟수를 초과"))
 				{
 					((WebDriver)drv).Navigate().Back();

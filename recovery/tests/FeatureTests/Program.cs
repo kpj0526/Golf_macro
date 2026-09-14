@@ -206,6 +206,13 @@ internal static class Program
 		NearestNull("no eligible row (starter mismatch)", L(Row("0900", "썬"), Row("0930", "밸리")), 900, "설악");
 		NearestNull("empty list", L(), 900, "NA");
 
+		var retryReq = new bookInfo(0, "NA", 0, "20260521", 0, 2359, 900);
+		var rejected = new HashSet<string> { "08:50" };
+		var retrySlot = TeeSelector.PickNearest(L(Row("0850", "NA"), Row("0905", "NA")), retryReq,
+			rejected, delegate { }, out string retryTime, out int retryDelta);
+		Expect("concurrent retry skips rejected tee", retrySlot != null && retryTime == "09:05" && retryDelta == 5,
+			"chosen=" + (retryTime ?? "null") + " delta=" + retryDelta);
+
 		// desiredTime fallback: when desired==0 the ctor falls back to startTime
 		var reqFallback = new bookInfo(0, "NA", 0, "20260521", 930, 2359, 0);
 		Expect("desiredTime falls back to startTime", reqFallback.desiredTime == 930, "desiredTime=" + reqFallback.desiredTime);
