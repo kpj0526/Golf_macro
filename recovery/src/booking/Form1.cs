@@ -892,78 +892,97 @@ public class Form1 : Form
 			return false;
 		}
 
-		if (bookList.Count == 0)
-		{
-			logtxtBox("No conditions configured. RUN TERMINATED.");
-			SafeQuit(val);
-			return false;
-		}
-
-		logtxtBox("========== 예약 1 ==========  " + bookList[0]);
-		BookOutcome o1 = client.bookRequest(bookList[0]);
-		logtxtBox(DescribeOutcome(1, o1));
-		logtxtBox(SequentialGate.Decision(o1, client.diagnosticMode));
-		if (!SequentialGate.ShouldRunCondition2(o1))
-		{
-			logtxtBox("==> 예약 2 건너뜀. 실행 종료 (예약 1 브라우저/페이지 오류).");
-			logtxtBox(SummarizeRun(o1, null, null));
-			SafeQuit(val);
-			return false;
-		}
-
-		if (bookList.Count < 2 || stopClicked)
-		{
-			logtxtBox("예약 2 없음. 실행 완료.");
-			logtxtBox(SummarizeRun(o1, null, stopClicked ? "사용자가 실행을 중지함" : null));
-			SafeQuit(val);
-			return true;
-		}
-
+		// bookMain runs unobserved on a background Task (no .Wait()/.Result anywhere) and
+		// this is the SHARED-session path (same account, or a single reservation) used
+		// whenever a run does not qualify for isolated parallel sessions. Everything from
+		// here on must not let an exception escape uncaught: an unobserved Task exception
+		// is swallowed by the runtime, so the run would otherwise just silently stop with
+		// no log line, no summary and no SafeQuit - the ChromeDriver window is left open
+		// and the operator has no idea what happened.
+		BookOutcome o1 = null;
+		BookOutcome o2 = null;
 		try
 		{
-			((IWebDriver)(object)val).SwitchTo().NewWindow(WindowType.Tab);
-			logtxtBox("예약 2: 새 탭에서 진행");
-		}
-		catch (Exception)
-		{
-		}
-
-		// The two tabs share browser cookies.  Reuse a same-account session; otherwise
-		// explicitly leave it and verify a fresh login form before signing in.
-		int r2slot = coreData.accounts.ClampSlot(coreData.accounts.Res2Slot);
-		bool sameAccount = !ReservationExecutionPolicy.UseParallelSessions(true, coreData.accounts);
-		if (!client.prepareReservation2Session(this, sameAccount))
-		{
-			logtxtBox("예약 2 세션 전환 실패. 실행 종료.");
-			logtxtBox(SummarizeRun(o1, null, "예약 2 세션 전환 실패"));
-			SafeQuit(val);
-			return false;
-		}
-		if (!sameAccount)
-		{
-			coreData.applyAccount(r2slot);
-			client.id = coreData.userId;
-			client.pwd = coreData.passwd;
-			logtxtBox("예약 2 계정 " + (r2slot + 1) + " 로 로그인");
-			if (!client.login(this))
+			if (bookList.Count == 0)
 			{
-				logtxtBox("예약 2 로그인 실패. 실행 종료.");
-				logtxtBox(SummarizeRun(o1, null, "예약 2 로그인 실패"));
+				logtxtBox("No conditions configured. RUN TERMINATED.");
 				SafeQuit(val);
 				return false;
 			}
-		}
 
-		logtxtBox("========== 예약 2 ==========  " + bookList[1]);
-		BookOutcome o2 = client.bookRequest(bookList[1]);
-		logtxtBox(DescribeOutcome(2, o2));
-		logtxtBox(o2.GateSatisfied
-			? ("예약 2 확정 (confirmationId=" + o2.ConfirmationId + ").")
-			: ("예약 2 미확정: " + o2.GateReason(client.diagnosticMode) + "."));
-		logtxtBox(SummarizeRun(o1, o2, null));
-		logtxtBox("실행 완료.");
-		SafeQuit(val);
-		return true;
+			logtxtBox("========== 예약 1 ==========  " + bookList[0]);
+			o1 = client.bookRequest(bookList[0]);
+			logtxtBox(DescribeOutcome(1, o1));
+			logtxtBox(SequentialGate.Decision(o1, client.diagnosticMode));
+			if (!SequentialGate.ShouldRunCondition2(o1))
+			{
+				logtxtBox("==> 예약 2 건너뜀. 실행 종료 (예약 1 브라우저/페이지 오류).");
+				logtxtBox(SummarizeRun(o1, null, null));
+				SafeQuit(val);
+				return false;
+			}
+
+			if (bookList.Count < 2 || stopClicked)
+			{
+				logtxtBox("예약 2 없음. 실행 완료.");
+				logtxtBox(SummarizeRun(o1, null, stopClicked ? "사용자가 실행을 중지함" : null));
+				SafeQuit(val);
+				return true;
+			}
+
+			try
+			{
+				((IWebDriver)(object)val).SwitchTo().NewWindow(WindowType.Tab);
+				logtxtBox("예약 2: 새 탭에서 진행");
+			}
+			catch (Exception)
+			{
+			}
+
+			// The two tabs share browser cookies.  Reuse a same-account session; otherwise
+			// explicitly leave it and verify a fresh login form before signing in.
+			int r2slot = coreData.accounts.ClampSlot(coreData.accounts.Res2Slot);
+			bool sameAccount = !ReservationExecutionPolicy.UseParallelSessions(true, coreData.accounts);
+			if (!client.prepareReservation2Session(this, sameAccount))
+			{
+				logtxtBox("예약 2 세션 전환 실패. 실행 종료.");
+				logtxtBox(SummarizeRun(o1, null, "예약 2 세션 전환 실패"));
+				SafeQuit(val);
+				return false;
+			}
+			if (!sameAccount)
+			{
+				coreData.applyAccount(r2slot);
+				client.id = coreData.userId;
+				client.pwd = coreData.passwd;
+				logtxtBox("예약 2 계정 " + (r2slot + 1) + " 로 로그인");
+				if (!client.login(this))
+				{
+					logtxtBox("예약 2 로그인 실패. 실행 종료.");
+					logtxtBox(SummarizeRun(o1, null, "예약 2 로그인 실패"));
+					SafeQuit(val);
+					return false;
+				}
+			}
+
+			logtxtBox("========== 예약 2 ==========  " + bookList[1]);
+			o2 = client.bookRequest(bookList[1]);
+			logtxtBox(DescribeOutcome(2, o2));
+			logtxtBox(o2.GateSatisfied
+				? ("예약 2 확정 (confirmationId=" + o2.ConfirmationId + ").")
+				: ("예약 2 미확정: " + o2.GateReason(client.diagnosticMode) + "."));
+			logtxtBox(SummarizeRun(o1, o2, null));
+			logtxtBox("실행 완료.");
+			SafeQuit(val);
+			return true;
+		}
+		catch (Exception ex)
+		{
+			logtxtBox("bookMain 예약 처리 중 예상치 못한 오류: " + ex.GetType().Name + " - " + ex.Message);
+			logtxtBox(SummarizeRun(o1, o2, "예상치 못한 오류: " + ex.Message));
+			SafeQuit(val);
+			return false;
+		}
 	}
 
 	private static string DescribeOutcome(int n, BookOutcome o)

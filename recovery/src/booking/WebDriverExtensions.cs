@@ -79,6 +79,38 @@ public static class WebDriverExtensions
 		}
 	}
 
+	// Retries a click a bounded number of times, tolerating the transient states a click
+	// can hit while a page is still rendering/transitioning right at a reservation's
+	// opening moment: ElementNotInteractableException, ElementClickInterceptedException,
+	// and StaleElementReferenceException (the DOM was re-rendered under load between
+	// lookup and click). `locate` is called fresh before every attempt so a stale
+	// reference is re-resolved instead of retried as-is.
+	public static bool ClickWithRetry(Func<IWebElement> locate, int maxAttempts = 4, int delayMs = 300)
+	{
+		for (int attempt = 1; attempt <= maxAttempts; attempt++)
+		{
+			try
+			{
+				IWebElement element = locate();
+				if (element != null)
+				{
+					element.Click();
+					return true;
+				}
+			}
+			// ElementClickInterceptedException derives from ElementNotInteractableException
+			// in this Selenium client, so one catch covers both.
+			catch (ElementNotInteractableException) { }
+			catch (StaleElementReferenceException) { }
+			catch (NoSuchElementException) { }
+			if (attempt < maxAttempts)
+			{
+				Thread.Sleep(delayMs);
+			}
+		}
+		return false;
+	}
+
 	public static string handleAlert(IWebDriver drv)
 	{
 		string result = null;

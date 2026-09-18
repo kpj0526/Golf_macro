@@ -372,6 +372,8 @@ internal class sunValley : club
 		// Prefer the site's course-code link and fall back to its visible tile label.
 		string code = courseCodes[req.course];
 		string name = courseNames[req.course];
+		string linkXPath = "//a[contains(@href, 'sel=" + code + "') or @data-course='" + code + "' or @data-code='" + code + "']";
+		string labelXPath = "//*[self::a or self::button][normalize-space(.)='" + name + "']";
 		DateTime deadline = DateTime.Now.AddSeconds(ReservationPageTimeoutSeconds);
 		bool selectionClicked = false;
 		while (DateTime.Now < deadline && !frm.stopClicked)
@@ -380,21 +382,30 @@ internal class sunValley : club
 				return true;
 			if (!selectionClicked)
 			{
-				IWebElement choice = null;
-				ReadOnlyCollection<IWebElement> links = ((IWebDriver)(object)drv).FindElements(By.XPath("//a[contains(@href, 'sel=" + code + "') or @data-course='" + code + "' or @data-code='" + code + "']"));
-				if (links.Count > 0)
-					choice = links[0];
-				else
-				{
-					ReadOnlyCollection<IWebElement> labels = ((IWebDriver)(object)drv).FindElements(By.XPath("//*[self::a or self::button][normalize-space(.)='" + name + "']"));
-					if (labels.Count > 0)
-						choice = labels[0];
-				}
-				if (choice != null)
+				bool choicePresent = ((IWebDriver)(object)drv).FindElements(By.XPath(linkXPath)).Count > 0
+					|| ((IWebDriver)(object)drv).FindElements(By.XPath(labelXPath)).Count > 0;
+				if (choicePresent)
 				{
 					frm.logtxtBox("T # " + threadIndex + " course picker redirect detected; selecting " + name + ".");
-					WebDriverExtensions.clickLock(choice);
-					selectionClicked = true;
+					// The link can exist in the DOM a moment before it is actually
+					// clickable (mid page-transition) - re-locate and retry rather
+					// than aborting the whole navigation on the first click failure.
+					bool clicked = WebDriverExtensions.ClickWithRetry(() =>
+					{
+						ReadOnlyCollection<IWebElement> links2 = ((IWebDriver)(object)drv).FindElements(By.XPath(linkXPath));
+						if (links2.Count > 0)
+							return links2[0];
+						ReadOnlyCollection<IWebElement> labels2 = ((IWebDriver)(object)drv).FindElements(By.XPath(labelXPath));
+						return (labels2.Count > 0) ? labels2[0] : null;
+					});
+					if (clicked)
+					{
+						selectionClicked = true;
+					}
+					else
+					{
+						frm.logtxtBox("T # " + threadIndex + " course picker link click failed after retries; will keep polling.");
+					}
 				}
 			}
 			Thread.Sleep(200);
@@ -429,19 +440,17 @@ internal class sunValley : club
 	// Opens the date cell and returns the real reserve rows (.btn.btn-res) the booking
 	// flow consumes. Used to override a stale / misleading cell title (e.g. "오픈전입니다")
 	// before the pre-opening refresh branch runs.
-	private ReadOnlyCollection<IWebElement> ProbeTeeRows(IWebElement dateCell)
+	private ReadOnlyCollection<IWebElement> ProbeTeeRows(IWebElement dateCell, string dateCellXPath)
 	{
 		try
 		{
 			if (dateCell != null)
 			{
-				try
+				WebDriverExtensions.ClickWithRetry(() =>
 				{
-					WebDriverExtensions.clickLock(dateCell);
-				}
-				catch (Exception)
-				{
-				}
+					ReadOnlyCollection<IWebElement> cells = ((IWebDriver)(object)drv).FindElements(By.XPath(dateCellXPath));
+					return (cells.Count > 0) ? cells[0] : dateCell;
+				}, maxAttempts: 3, delayMs: 200);
 			}
 			return ((IWebDriver)(object)drv).FindElements(By.XPath("//*[@class='btn btn-res']"), 10);
 		}
@@ -622,7 +631,7 @@ internal class sunValley : club
 			bool cellOpened = false;
 			if (state == BookingPageState.NotOpenYet || state == BookingPageState.Unknown)
 			{
-				ReadOnlyCollection<IWebElement> probeRows = ProbeTeeRows(dateCell);
+				ReadOnlyCollection<IWebElement> probeRows = ProbeTeeRows(dateCell, dateCellXPath);
 				cellOpened = true;
 				int probedCount = (probeRows != null) ? probeRows.Count : 0;
 				BookingPageState resolved = BookingDiagnostics.ResolveWithRowProbe(state, probedCount);
@@ -693,7 +702,23 @@ internal class sunValley : club
 				target = dateCell;
 				if (!cellOpened)
 				{
-					WebDriverExtensions.clickLock(dateCell);
+					// The date cell can be present but not yet clickable right at the
+					// opening moment (page still mid-transition under load); re-locate
+					// and retry rather than aborting the whole attempt on one failure.
+					bool cellClicked = WebDriverExtensions.ClickWithRetry(() =>
+					{
+						ReadOnlyCollection<IWebElement> cells = ((IWebDriver)(object)drv).FindElements(By.XPath(dateCellXPath));
+						return (cells.Count > 0) ? cells[0] : null;
+					});
+					if (!cellClicked)
+					{
+						BookingDiagnostics.Capture(drv, diagnosticsDir, "date-cell-click-failed",
+							"could not click date cell after retries. xpath=" + dateCellXPath);
+						frm.logtxtBox("T # " + threadIndex + " date cell click failed after retries");
+						outcome.Result = OpResult.Fail;
+						outcome.Detail = "date cell click failed after retries";
+						return outcome;
+					}
 				}
 				ReadOnlyCollection<IWebElement> teeButtons = ((IWebDriver)(object)drv).FindElements(By.XPath("//*[@class='btn btn-res']"), 10);
 				if (teeButtons == null || teeButtons.Count == 0)
@@ -867,6 +892,110 @@ internal class sunValley : club
 		}
 	}
 
+	// Re-locates the chosen tee row by its parsed time + starter before each retry, so a
+	// stale reference (the row list re-rendered under contention while several accounts
+	// race for the same slot) does not abort the whole submission.
+	private bool ClickTeeButtonWithRetry(IWebElement initial, string chosenHHmm, string starter, int maxAttempts = 4, int delayMs = 250)
+	{
+		IWebElement current = initial;
+		for (int attempt = 1; attempt <= maxAttempts; attempt++)
+		{
+			try
+			{
+				if (current != null)
+				{
+					((WebDriver)drv).ExecuteScript("arguments[0].click();", new object[1] { current });
+					return true;
+				}
+			}
+			catch (Exception)
+			{
+				current = null;
+			}
+			if (attempt < maxAttempts)
+			{
+				Thread.Sleep(delayMs);
+				current = ReLocateTeeButton(chosenHHmm, starter);
+			}
+		}
+		return false;
+	}
+
+	private IWebElement ReLocateTeeButton(string chosenHHmm, string starter)
+	{
+		try
+		{
+			ReadOnlyCollection<IWebElement> rows = ((IWebDriver)(object)drv).FindElements(By.XPath("//*[@class='btn btn-res']"), 3);
+			if (rows == null)
+			{
+				return null;
+			}
+			// Compare by minute-of-day, not raw digit text: the site's onclick time field
+			// omits the leading zero before 10:00 (e.g. "905" for 09:05), which would never
+			// textually match TeeSelector's zero-padded "09:05" -> "0905".
+			int wantMinutes = TeeSelector.ToMinutes(ParseHHmm(chosenHHmm));
+			foreach (IWebElement row in rows)
+			{
+				string oc = row.GetAttribute("onclick");
+				if (string.IsNullOrEmpty(oc))
+				{
+					continue;
+				}
+				string[] a = oc.Split(',');
+				if (a.Length < 2)
+				{
+					continue;
+				}
+				string digits = DigitsOnly(a[1]);
+				if (digits.Length < 3 || !int.TryParse(digits, out int rowHHmm))
+				{
+					continue;
+				}
+				if (TeeSelector.ToMinutes(rowHHmm) != wantMinutes)
+				{
+					continue;
+				}
+				if (!string.IsNullOrEmpty(starter) && starter != "NA" && a.Length > 3)
+				{
+					string rowStarter = a[3].Replace("'", "").Trim();
+					if (rowStarter != starter)
+					{
+						continue;
+					}
+				}
+				return row;
+			}
+		}
+		catch (Exception)
+		{
+		}
+		return null;
+	}
+
+	private static int ParseHHmm(string hhColonMm)
+	{
+		int hhmm;
+		int.TryParse(DigitsOnly(hhColonMm), out hhmm);
+		return hhmm;
+	}
+
+	private static string DigitsOnly(string s)
+	{
+		System.Text.StringBuilder sb = new System.Text.StringBuilder();
+		if (s == null)
+		{
+			return "";
+		}
+		foreach (char c in s)
+		{
+			if (c >= '0' && c <= '9')
+			{
+				sb.Append(c);
+			}
+		}
+		return sb.ToString();
+	}
+
 	private OpResult tryReserve(IWebElement btn, bookInfo req, string chosenHHmm)
 	{
 #if DIAGNOSTIC_BUILD
@@ -878,7 +1007,13 @@ internal class sunValley : club
 		OpResult result = OpResult.Fail;
 		try
 		{
-			((WebDriver)drv).ExecuteScript("arguments[0].click();", new object[1] { btn });
+			if (!ClickTeeButtonWithRetry(btn, chosenHHmm, req.starter))
+			{
+				frm.logtxtBox("T # " + threadIndex + " submit click failed after retries (tee row unavailable/stale)");
+				BookingDiagnostics.Capture(drv, diagnosticsDir, "submit-click-failed",
+					"could not click tee row chosen=" + chosenHHmm + " starter=" + (req.starter ?? "NA") + " after retries");
+				return OpResult.Fail;
+			}
 			frm.logtxtBox("T # " + threadIndex + " submit button clicked");
 			IWebElement val = ((IWebDriver)(object)drv).FindElement(By.XPath("//*[@id='golfTimeDiv2']/div[3]/div/div[1]/button"), ConfirmationDialogTimeoutSeconds);
 			if (val == null)
