@@ -65,5 +65,5 @@ py tools/install_golf_catch.py --install-dir D:\\GolfCatch
 
 - 최종 숨김 브라우저 QA: 예약 1 종료 뒤 서버 로그아웃, 계정 2 재로그인과 예약 2 조회까지 통과했다. 두 건은 마감 상태로 종료됐고 제출은 발생하지 않았다.
 - 고객 ZIP은 실행 파일과 설정 파일만 포함하며, 계정·로그·진단·테스트·소스 파일은 제외했다.
-- 공개 고객 다운로드: <https://github.com/kpj0526/GolfCatch-download/releases/latest>
+- 공개 고객 다운로드: <https://github.com/kpj0526/Golf_macro/releases/latest>
 - 설치 도우미의 실제 공개 다운로드·압축 해제·실행 파일 검증을 완료했다.

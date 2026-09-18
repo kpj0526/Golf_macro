@@ -18,9 +18,8 @@ import urllib.request
 import zipfile
 
 
-# Public, release-only repository. The private source repository is never exposed
-# to customers by the installer.
-REPOSITORY = "kpj0526/GolfCatch-download"
+# Public repository that hosts the packaged customer release assets.
+REPOSITORY = "kpj0526/Golf_macro"
 ASSET_NAME = "GolfCatch-win-x64.zip"
 API_URL = f"https://api.github.com/repos/{REPOSITORY}/releases/latest"
 
