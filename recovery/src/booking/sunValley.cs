@@ -32,6 +32,9 @@ internal class sunValley : club
 	private const int PageContentTimeoutSeconds = 20;
 	private const int CompletionAlertTimeoutSeconds = 20;
 	private const int MaxConcurrentReservationAttempts = 5;
+	// Polling is deliberately separate from the timeouts above.  A 75 ms cadence
+	// lets a fast customer PC react quickly without skipping any required page state.
+	private const int FastStatePollMilliseconds = 75;
 
 	private string[] clubs = new string[4] { "https://www.sunvalley.co.kr/reservation/golf?sel=J21", "https://www.sunvalley.co.kr/reservation/golf?sel=J23", "https://www.sunvalley.co.kr/reservation/golf?sel=J24", "https://www.sunvalley.co.kr/reservation/golf?sel=J25" };
 
@@ -214,7 +217,7 @@ internal class sunValley : club
 			{
 				// The document can be replaced while loading; poll the next state.
 			}
-			Thread.Sleep(150);
+			Thread.Sleep(FastStatePollMilliseconds);
 		}
 		return false;
 	}
@@ -252,7 +255,7 @@ internal class sunValley : club
 			{
 				reason = "while waiting for login completion: " + ex.GetType().Name + ": " + ex.Message;
 			}
-			Thread.Sleep(150);
+			Thread.Sleep(FastStatePollMilliseconds);
 		}
 		if (frm.stopClicked)
 			reason = "stopped by user while waiting for login completion";
@@ -285,7 +288,7 @@ internal class sunValley : club
 			{
 				// The navigation may still be replacing the document.
 			}
-			Thread.Sleep(150);
+			Thread.Sleep(FastStatePollMilliseconds);
 		}
 		return false;
 	}
@@ -305,7 +308,7 @@ internal class sunValley : club
 			}
 			catch (NoAlertPresentException)
 			{
-				Thread.Sleep(150);
+				Thread.Sleep(FastStatePollMilliseconds);
 			}
 		}
 		return false;
@@ -337,7 +340,7 @@ internal class sunValley : club
 					frm.logtxtBox("예약 2: 로그인 폼 확인 완료.");
 					return true;
 				}
-				Thread.Sleep(250);
+				Thread.Sleep(FastStatePollMilliseconds);
 			}
 			string url = BookingDiagnostics.SafeUrl(driver2);
 			frm.logtxtBox("예약 2 세션 전환 실패: 로그아웃 후 로그인 폼이 표시되지 않았습니다. url=" + url);
@@ -408,7 +411,7 @@ internal class sunValley : club
 					}
 				}
 			}
-			Thread.Sleep(200);
+			Thread.Sleep(FastStatePollMilliseconds);
 		}
 		frm.logtxtBox("T # " + threadIndex + " STOP: requested reservation calendar did not load (" + name + ").");
 		return false;
@@ -508,7 +511,7 @@ internal class sunValley : club
 		{
 			if (((IWebDriver)(object)drv).FindElements(By.XPath(dateCellXPath)).Count != 0)
 				return true;
-			Thread.Sleep(200);
+			Thread.Sleep(FastStatePollMilliseconds);
 		}
 		return false;
 	}
