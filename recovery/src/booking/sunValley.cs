@@ -21,6 +21,12 @@ internal class sunValley : club
 	// HistoryVerified = true without re-running the weaker VerifyReservationHistory check.
 	private bool lastHistoryStrictConfirmed;
 
+	// A same-account reservation 2 calendar can be loaded in an idle tab while
+	// reservation 1 waits for opening.  At handoff we refresh this tab instead of
+	// paying for another course-picker/navigation round trip.
+	private string preloadedReservationHandle;
+	private string preloadedReservationDate;
+
 	private const string loginUrl = "https://www.sunvalley.co.kr/member/login?returnURL=/reservation/golf";
 
 	// Upper bounds rather than fixed delays: fast PCs continue immediately, while
@@ -32,9 +38,10 @@ internal class sunValley : club
 	private const int PageContentTimeoutSeconds = 20;
 	private const int CompletionAlertTimeoutSeconds = 20;
 	private const int MaxConcurrentReservationAttempts = 5;
-	// Polling is deliberately separate from the timeouts above.  A 75 ms cadence
-	// lets a fast customer PC react quickly without skipping any required page state.
-	private const int FastStatePollMilliseconds = 75;
+	// Performance-first cadence for the short, critical state transitions around
+	// opening and submission.  Server/network latency still dominates once a request
+	// has been sent, but the client adds no intentional multi-hundred-ms delay.
+	private const int FastStatePollMilliseconds = 10;
 
 	private string[] clubs = new string[4] { "https://www.sunvalley.co.kr/reservation/golf?sel=J21", "https://www.sunvalley.co.kr/reservation/golf?sel=J23", "https://www.sunvalley.co.kr/reservation/golf?sel=J24", "https://www.sunvalley.co.kr/reservation/golf?sel=J25" };
 
@@ -453,7 +460,7 @@ internal class sunValley : club
 				{
 					ReadOnlyCollection<IWebElement> cells = ((IWebDriver)(object)drv).FindElements(By.XPath(dateCellXPath));
 					return (cells.Count > 0) ? cells[0] : dateCell;
-				}, maxAttempts: 3, delayMs: 200);
+				}, maxAttempts: 3, delayMs: 10);
 			}
 			return ((IWebDriver)(object)drv).FindElements(By.XPath("//*[@class='btn btn-res']"), 10);
 		}
@@ -487,9 +494,55 @@ internal class sunValley : club
 	// Recovery feature: explicit single-request booking with a rich outcome, used by the
 	// sequential hard gate. Keeps the false-preopening fix, bounded retries, diagnostics
 	// and diagnostic no-submit behaviour.
-	public override BookOutcome bookRequest(bookInfo req)
+	public override BookOutcome bookRequest(bookInfo req, bool deferHistoryVerification = false)
 	{
-		return BookCore(req);
+		return BookCore(req, deferHistoryVerification);
+	}
+
+	public override void completeDeferredVerification(BookOutcome outcome, bookInfo req)
+	{
+		if (outcome == null || req == null || outcome.Result != OpResult.BookOneSuccess ||
+			outcome.HistoryVerified)
+		{
+			return;
+		}
+		frm.logtxtBox("T # " + threadIndex + " 예약 1 후속 확인: 예약 2 처리 후 예약내역을 확인합니다.");
+		outcome.HistoryVerified = VerifyReservationHistory(req, outcome.ConfirmationId, outcome.ChosenTee);
+	}
+
+	public override bool preloadReservationPage(bookInfo req)
+	{
+		if (req == null || diagnosticMode || dummyTestMode || frm.stopClicked)
+		{
+			return false;
+		}
+		try
+		{
+			IWebDriver driver2 = (IWebDriver)(object)drv;
+			string originalHandle = driver2.CurrentWindowHandle;
+			driver2.SwitchTo().NewWindow(WindowType.Tab);
+			string dateCellXPath = setDatePath(req.date).Item2;
+			frm.logtxtBox("예약 2: 대기 탭에 예약 캘린더를 미리 불러옵니다.");
+			if (!NavigateToReservation(req, dateCellXPath))
+			{
+				driver2.Close();
+				driver2.SwitchTo().Window(originalHandle);
+				frm.logtxtBox("예약 2: 사전 로드 실패 - 일반 경로로 진행합니다.");
+				return false;
+			}
+			preloadedReservationHandle = driver2.CurrentWindowHandle;
+			preloadedReservationDate = req.date;
+			driver2.SwitchTo().Window(originalHandle);
+			frm.logtxtBox("예약 2: 사전 로드 완료. 예약 1 접수 후 이 탭을 즉시 새로고침합니다.");
+			return true;
+		}
+		catch (Exception ex)
+		{
+			preloadedReservationHandle = null;
+			preloadedReservationDate = null;
+			frm.logtxtBox("예약 2 사전 로드 오류: " + ex.GetType().Name + " - 일반 경로로 진행합니다.");
+			return false;
+		}
 	}
 
 	private bool WaitForSingleCheck(DateTime checkAt, string rule)
@@ -516,7 +569,7 @@ internal class sunValley : club
 		return false;
 	}
 
-	private BookOutcome BookCore(bookInfo bookInfo2)
+	private BookOutcome BookCore(bookInfo bookInfo2, bool deferHistoryVerification = false)
 	{
 		BookOutcome outcome = new BookOutcome
 		{
@@ -533,7 +586,18 @@ internal class sunValley : club
 		try
 		{
 			dateCellXPath = setDatePath(bookInfo2.date).Item2;
-			bool preloaded = false;
+			bool preloaded = ActivatePreloadedReservation(bookInfo2, dateCellXPath);
+			if (preloaded)
+			{
+				frm.logtxtBox("예약 2: 사전 로드 탭 활성화 - 즉시 새로고침합니다.");
+				((WebDriver)drv).Navigate().Refresh();
+				if (!WaitForReservationCalendar(dateCellXPath))
+				{
+					outcome.Result = OpResult.FalalError;
+					outcome.Detail = "preloaded reservation calendar did not return after handoff refresh";
+					return outcome;
+				}
+			}
 			if (singleScheduledCheck && DateTime.Now < checkAt)
 			{
 				DateTime preloadAt = checkAt.AddMinutes(-1);
@@ -809,6 +873,14 @@ internal class sunValley : club
 						outcome.HistoryVerified = true;
 						frm.logtxtBox("T # " + threadIndex + " HistoryVerified: 예약내역 엄격 기준(날짜·시간·코스·스타터) 일치로 확정 유지");
 					}
+					else if (deferHistoryVerification)
+					{
+						// On a shared account, start reservation 2 as soon as the site accepts
+						// reservation 1.  Loading the history page here costs precious seconds
+						// while the second tee times are disappearing.  It is still verified
+						// after reservation 2 before the run is summarized.
+						frm.logtxtBox("T # " + threadIndex + " 예약 1 접수 확인됨 - 예약내역 확인은 예약 2 후로 미룹니다.");
+					}
 					else
 					{
 						outcome.HistoryVerified = VerifyReservationHistory(bookInfo2, outcome.ConfirmationId, chosenHHmm);
@@ -834,6 +906,32 @@ internal class sunValley : club
 		outcome.Result = OpResult.Fail;
 		outcome.Detail = "stopClicked before completion";
 		return outcome;
+	}
+
+	private bool ActivatePreloadedReservation(bookInfo req, string dateCellXPath)
+	{
+		if (string.IsNullOrEmpty(preloadedReservationHandle) || preloadedReservationDate != req.date)
+		{
+			return false;
+		}
+		try
+		{
+			IWebDriver driver2 = (IWebDriver)(object)drv;
+			if (!driver2.WindowHandles.Contains(preloadedReservationHandle))
+			{
+				return false;
+			}
+			driver2.SwitchTo().Window(preloadedReservationHandle);
+			preloadedReservationHandle = null;
+			preloadedReservationDate = null;
+			return true;
+		}
+		catch (Exception)
+		{
+			preloadedReservationHandle = null;
+			preloadedReservationDate = null;
+			return false;
+		}
 	}
 
 	// Recovery feature: pull a server confirmation / reservation number out of the
@@ -898,7 +996,7 @@ internal class sunValley : club
 	// Re-locates the chosen tee row by its parsed time + starter before each retry, so a
 	// stale reference (the row list re-rendered under contention while several accounts
 	// race for the same slot) does not abort the whole submission.
-	private bool ClickTeeButtonWithRetry(IWebElement initial, string chosenHHmm, string starter, int maxAttempts = 4, int delayMs = 250)
+	private bool ClickTeeButtonWithRetry(IWebElement initial, string chosenHHmm, string starter, int maxAttempts = 4, int delayMs = 10)
 	{
 		IWebElement current = initial;
 		for (int attempt = 1; attempt <= maxAttempts; attempt++)

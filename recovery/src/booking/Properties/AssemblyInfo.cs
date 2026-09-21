@@ -5,10 +5,10 @@ using System.Runtime.Versioning;
 
 [assembly: AssemblyCompany("booking")]
 [assembly: AssemblyConfiguration("Release")]
-[assembly: AssemblyFileVersion("0.7.2.0")]
-[assembly: AssemblyInformationalVersion("0.7.2")]
+[assembly: AssemblyFileVersion("0.7.3.0")]
+[assembly: AssemblyInformationalVersion("0.7.3")]
 [assembly: AssemblyProduct("booking")]
 [assembly: AssemblyTitle("booking")]
 [assembly: TargetPlatform("Windows7.0")]
 [assembly: SupportedOSPlatform("Windows7.0")]
-[assembly: AssemblyVersion("0.7.2.0")]
+[assembly: AssemblyVersion("0.7.3.0")]

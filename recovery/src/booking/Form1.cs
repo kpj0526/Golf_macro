@@ -640,7 +640,7 @@ public class Form1 : Form
 		{
 			ts[k] = new Task<bool>(worker, k, cts[k].Token);
 			ts[k].Start();
-			Thread.Sleep(100);
+			Thread.Sleep(1);
 		}
 		logtxtBox("Initialization Done");
 		return true;
@@ -901,6 +901,7 @@ public class Form1 : Form
 		// and the operator has no idea what happened.
 		BookOutcome o1 = null;
 		BookOutcome o2 = null;
+		bool reservation2Preloaded = false;
 		try
 		{
 			if (bookList.Count == 0)
@@ -910,8 +911,19 @@ public class Form1 : Form
 				return false;
 			}
 
+			bool sameAccountRun = bookList.Count > 1 &&
+				!ReservationExecutionPolicy.UseParallelSessions(true, coreData.accounts);
+			if (sameAccountRun)
+			{
+				reservation2Preloaded = client.preloadReservationPage(bookList[1]);
+			}
+
 			logtxtBox("========== 예약 1 ==========  " + bookList[0]);
-			o1 = client.bookRequest(bookList[0]);
+			// A shared account cannot safely submit two reservations concurrently, but
+			// it can begin reservation 2 immediately after reservation 1 is accepted.
+			// Defer only the slow history-page check; it is completed after reservation 2.
+			bool accelerateReservation2 = bookList.Count > 1;
+			o1 = client.bookRequest(bookList[0], accelerateReservation2);
 			logtxtBox(DescribeOutcome(1, o1));
 			logtxtBox(SequentialGate.Decision(o1, client.diagnosticMode));
 			if (!SequentialGate.ShouldRunCondition2(o1))
@@ -932,8 +944,11 @@ public class Form1 : Form
 
 			try
 			{
-				((IWebDriver)(object)val).SwitchTo().NewWindow(WindowType.Tab);
-				logtxtBox("예약 2: 새 탭에서 진행");
+				if (!reservation2Preloaded)
+				{
+					((IWebDriver)(object)val).SwitchTo().NewWindow(WindowType.Tab);
+					logtxtBox("예약 2: 새 탭에서 진행");
+				}
 			}
 			catch (Exception)
 			{
@@ -968,6 +983,11 @@ public class Form1 : Form
 			logtxtBox("========== 예약 2 ==========  " + bookList[1]);
 			o2 = client.bookRequest(bookList[1]);
 			logtxtBox(DescribeOutcome(2, o2));
+			if (accelerateReservation2)
+			{
+				client.completeDeferredVerification(o1, bookList[0]);
+				logtxtBox(DescribeOutcome(1, o1));
+			}
 			logtxtBox(o2.GateSatisfied
 				? ("예약 2 확정 (confirmationId=" + o2.ConfirmationId + ").")
 				: ("예약 2 미확정: " + o2.GateReason(client.diagnosticMode) + "."));

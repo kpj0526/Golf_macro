@@ -90,13 +90,31 @@ internal abstract class club
 	/// (nearest-time selection + submit + confirmation-id + history verification).
 	/// Used by the sequential two-condition orchestrator. Only sunValley implements it.
 	/// </summary>
-	public virtual BookOutcome bookRequest(bookInfo req)
+	public virtual BookOutcome bookRequest(bookInfo req, bool deferHistoryVerification = false)
 	{
 		return new BookOutcome
 		{
 			Result = OpResult.Fail,
 			Detail = "bookRequest is not implemented for " + GetType().Name
 		};
+	}
+
+	/// <summary>
+	/// Completes a deliberately deferred post-submit verification.  The shared-session
+	/// Sun Valley path uses this after reservation 2 so an already-accepted reservation 1
+	/// does not lose the next tee time while its history page is loading.
+	/// </summary>
+	public virtual void completeDeferredVerification(BookOutcome outcome, bookInfo req)
+	{
+	}
+
+	/// <summary>
+	/// Optionally load reservation 2 into an idle tab before the opening rush.  This is
+	/// only used for the same-account sequential path; no reservation is submitted here.
+	/// </summary>
+	public virtual bool preloadReservationPage(bookInfo req)
+	{
+		return false;
 	}
 
 	public virtual void logout(Form1 frm)

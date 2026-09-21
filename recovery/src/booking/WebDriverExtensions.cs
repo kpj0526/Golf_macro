@@ -11,6 +11,10 @@ namespace booking;
 
 public static class WebDriverExtensions
 {
+	// Selenium waits poll every 500 ms by default.  At a reservation opening that
+	// default alone can lose a tee time after the site has already responded.
+	private const int FastWaitPollMilliseconds = 10;
+
 	public static object lockObject = new object();
 
 	public static int delay1 = 100;
@@ -19,13 +23,20 @@ public static class WebDriverExtensions
 
 	public static Form1 frm;
 
+	private static WebDriverWait FastWait(IWebDriver driver, TimeSpan timeout)
+	{
+		var wait = new WebDriverWait(driver, timeout);
+		wait.PollingInterval = TimeSpan.FromMilliseconds(FastWaitPollMilliseconds);
+		return wait;
+	}
+
 	public static void clickableClick(this IWebDriver driver, IWebElement ele, int timeoutInSeconds = 1)
 	{
 		//IL_0008: Unknown result type (might be due to invalid IL or missing references)
 		//IL_0018: Expected O, but got Unknown
 		try
 		{
-			((DefaultWait<IWebDriver>)new WebDriverWait(driver, TimeSpan.FromSeconds(timeoutInSeconds))).Until<IWebElement>(ExpectedConditions.ElementToBeClickable(ele)).Click();
+			FastWait(driver, TimeSpan.FromSeconds(timeoutInSeconds)).Until<IWebElement>(ExpectedConditions.ElementToBeClickable(ele)).Click();
 		}
 		catch (Exception ex)
 		{
@@ -40,7 +51,7 @@ public static class WebDriverExtensions
 		IWebElement val = null;
 		try
 		{
-			return (timeoutInSeconds <= 0) ? ((ISearchContext)driver).FindElement(by) : ((DefaultWait<IWebDriver>)new WebDriverWait(driver, TimeSpan.FromSeconds(timeoutInSeconds))).Until<IWebElement>((Func<IWebDriver, IWebElement>)((IWebDriver drv) => ((ISearchContext)drv).FindElement(by)));
+			return (timeoutInSeconds <= 0) ? ((ISearchContext)driver).FindElement(by) : FastWait(driver, TimeSpan.FromSeconds(timeoutInSeconds)).Until<IWebElement>((Func<IWebDriver, IWebElement>)((IWebDriver drv) => ((ISearchContext)drv).FindElement(by)));
 		}
 		catch (Exception ex)
 		{
@@ -60,7 +71,7 @@ public static class WebDriverExtensions
 		ReadOnlyCollection<IWebElement> readOnlyCollection = null;
 		try
 		{
-			return (timeoutInSeconds <= 0) ? ((ISearchContext)driver).FindElements(by) : ((DefaultWait<IWebDriver>)new WebDriverWait(driver, TimeSpan.FromSeconds(timeoutInSeconds))).Until<ReadOnlyCollection<IWebElement>>((Func<IWebDriver, ReadOnlyCollection<IWebElement>>)((IWebDriver drv) => (((ISearchContext)drv).FindElements(by).Count <= 0) ? null : ((ISearchContext)drv).FindElements(by)));
+			return (timeoutInSeconds <= 0) ? ((ISearchContext)driver).FindElements(by) : FastWait(driver, TimeSpan.FromSeconds(timeoutInSeconds)).Until<ReadOnlyCollection<IWebElement>>((Func<IWebDriver, ReadOnlyCollection<IWebElement>>)((IWebDriver drv) => (((ISearchContext)drv).FindElements(by).Count <= 0) ? null : ((ISearchContext)drv).FindElements(by)));
 		}
 		catch (Exception ex)
 		{
@@ -85,7 +96,7 @@ public static class WebDriverExtensions
 	// and StaleElementReferenceException (the DOM was re-rendered under load between
 	// lookup and click). `locate` is called fresh before every attempt so a stale
 	// reference is re-resolved instead of retried as-is.
-	public static bool ClickWithRetry(Func<IWebElement> locate, int maxAttempts = 4, int delayMs = 300)
+	public static bool ClickWithRetry(Func<IWebElement> locate, int maxAttempts = 4, int delayMs = 10)
 	{
 		for (int attempt = 1; attempt <= maxAttempts; attempt++)
 		{
