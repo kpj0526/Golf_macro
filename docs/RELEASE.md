@@ -1,6 +1,6 @@
 # 고객용 설치 안내
 
-다운로드: <https://github.com/kpj0526/GolfCatch-download/releases/latest>
+다운로드: <https://github.com/kpj0526/Golf_macro/releases/latest>
 
 ## 가장 쉬운 방법
 

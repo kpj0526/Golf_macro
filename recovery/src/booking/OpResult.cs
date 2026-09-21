@@ -14,5 +14,6 @@ public enum OpResult
 	DuplicateLogin = 9,
 	FoundSlot = 10,
 	OneFinish = 11,
+	ConcurrentReservation = 12,
 	Fail = 1000
 }

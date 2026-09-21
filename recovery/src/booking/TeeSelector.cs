@@ -28,6 +28,14 @@ internal static class TeeSelector
 	public static IWebElement PickNearest(IList<IWebElement> rows, bookInfo req, Action<string> log,
 		out string chosenHHmm, out int deltaMinutes)
 	{
+		return PickNearest(rows, req, null, log, out chosenHHmm, out deltaMinutes);
+	}
+
+	// When Sun Valley rejects a slot as a concurrent reservation, retry from a fresh
+	// list but never submit that already-rejected tee time again in the same run.
+	public static IWebElement PickNearest(IList<IWebElement> rows, bookInfo req, ISet<string> excludedHHmm,
+		Action<string> log, out string chosenHHmm, out int deltaMinutes)
+	{
 		chosenHHmm = null;
 		deltaMinutes = -1;
 
@@ -49,6 +57,11 @@ internal static class TeeSelector
 			}
 			if (!string.IsNullOrEmpty(req.starter) && req.starter != "NA" &&
 				!string.IsNullOrEmpty(starter) && starter != req.starter)
+			{
+				continue;
+			}
+			string candidateHHmm = FromMinutes(mins);
+			if (excludedHHmm != null && excludedHHmm.Contains(candidateHHmm))
 			{
 				continue;
 			}

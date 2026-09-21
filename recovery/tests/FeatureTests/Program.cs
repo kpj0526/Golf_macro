@@ -4,6 +4,7 @@ using System.Collections.ObjectModel;
 using System.Drawing;
 using System.IO;
 using System.Linq;
+using Microsoft.Win32;
 using OpenQA.Selenium;
 using booking;
 
@@ -40,28 +41,101 @@ internal static class Program
 		Section("8. Reservation-history fallback confirmation match (ReservationHistoryMatch)");
 		ReservationHistoryMatchTests();
 
+		Section("9. Legacy Windows-login auto-run cleanup (HKCU Run value removal only)");
+		LegacyAutoRunCleanupTests();
+
+		Section("10. Two-account execution policy (isolated parallel sessions)");
+		ReservationExecutionPolicyTests();
+
 		Console.WriteLine();
 		Console.WriteLine("================ " + _pass + " passed, " + _fail + " failed ================");
 		Environment.Exit(_fail == 0 ? 0 : 1);
+	}
+
+	private static void ReservationExecutionPolicyTests()
+	{
+		var accounts = new CredentialStore.AccountData();
+		accounts.Id[0] = "first-account";
+		accounts.Id[1] = "second-account";
+		accounts.Res1Slot = 0;
+		accounts.Res2Slot = 1;
+		Expect("different account IDs -> parallel isolated sessions",
+			ReservationExecutionPolicy.UseParallelSessions(true, accounts), "");
+
+		accounts.Res2Slot = 0;
+		Expect("same selected account -> sequential session",
+			!ReservationExecutionPolicy.UseParallelSessions(true, accounts), "");
+
+		accounts.Res2Slot = 1;
+		accounts.Id[1] = "FIRST-ACCOUNT";
+		Expect("same ID in two slots -> sequential session",
+			!ReservationExecutionPolicy.UseParallelSessions(true, accounts), "");
+
+		accounts.Id[1] = "second-account";
+		Expect("one reservation -> sequential session",
+			!ReservationExecutionPolicy.UseParallelSessions(false, accounts), "");
+	}
+
+	// ---------------------------------------------------------------- group 9
+	// Real HKCU access, but confined to a throwaway "Software\GolfCatchTest_<guid>"
+	// subtree that is deleted in the finally block. Never touches the real Run key.
+	private static void LegacyAutoRunCleanupTests()
+	{
+		string baseName = "Software\\GolfCatchTest_" + Guid.NewGuid().ToString("N");
+		string runPath = baseName + "\\Run";
+		try
+		{
+			// A) stale value present -> deleted; unrelated values untouched; nothing created
+			using (RegistryKey k = Registry.CurrentUser.CreateSubKey(runPath))
+			{
+				k.SetValue(LegacyAutoRunCleanup.LegacyValueName, "\"C:\\old\\booking.exe\" --auto-run", RegistryValueKind.String);
+				k.SetValue("SomeOtherApp", "keep me", RegistryValueKind.String);
+			}
+			bool removed = LegacyAutoRunCleanup.Run(runPath);
+			using (RegistryKey k = Registry.CurrentUser.OpenSubKey(runPath))
+			{
+				Expect("stale GolfCatchBooking value is deleted",
+					removed && k != null && k.GetValue(LegacyAutoRunCleanup.LegacyValueName) == null,
+					"removed=" + removed);
+				Expect("unrelated Run values are left intact",
+					k != null && (string)k.GetValue("SomeOtherApp") == "keep me", "");
+				Expect("no new value was created",
+					k != null && k.GetValueNames().Length == 1,
+					"names=" + (k == null ? "(null)" : string.Join(",", k.GetValueNames())));
+			}
+
+			// B) run again -> nothing to do
+			Expect("second run reports nothing removed", !LegacyAutoRunCleanup.Run(runPath), "");
+
+			// C) missing Run key -> false, and the key is NOT materialised
+			string missingPath = baseName + "\\NoSuchRun";
+			bool r = LegacyAutoRunCleanup.Run(missingPath);
+			using RegistryKey mk = Registry.CurrentUser.OpenSubKey(missingPath);
+			Expect("missing key -> false and key not created", !r && mk == null, "r=" + r + " keyExists=" + (mk != null));
+		}
+		finally
+		{
+			try { Registry.CurrentUser.DeleteSubKeyTree(baseName, throwOnMissingSubKey: false); } catch { }
+		}
 	}
 
 	// ---------------------------------------------------------------- group 7
 	private static void SunValleyScheduleTests()
 	{
 		// Tue 2026-06-23 belongs to the week beginning Mon 2026-06-22.
-		Schedule("Seorak weekday", 0, "20260623", new DateTime(2026, 6, 8, 9, 1, 0));
-		Schedule("Iljuk weekday", 1, "20260623", new DateTime(2026, 6, 8, 9, 31, 0));
-		Schedule("Dongwon weekday", 2, "20260623", new DateTime(2026, 6, 8, 10, 1, 0));
+		Schedule("Seorak weekday", 0, "20260623", new DateTime(2026, 6, 8, 9, 0, 0));
+		Schedule("Iljuk weekday", 1, "20260623", new DateTime(2026, 6, 8, 9, 30, 0));
+		Schedule("Dongwon weekday", 2, "20260623", new DateTime(2026, 6, 8, 10, 0, 0));
 
 		// Sat 2026-06-27 uses Fri 2026-06-12 for Iljuk/Dongwon.
-		Schedule("Seorak weekend still Monday", 0, "20260627", new DateTime(2026, 6, 8, 9, 1, 0));
-		Schedule("Iljuk weekend Friday", 1, "20260627", new DateTime(2026, 6, 12, 9, 31, 0));
-		Schedule("Dongwon weekend Friday", 2, "20260627", new DateTime(2026, 6, 12, 10, 1, 0));
+		Schedule("Seorak weekend still Monday", 0, "20260627", new DateTime(2026, 6, 8, 9, 0, 0));
+		Schedule("Iljuk weekend Friday", 1, "20260627", new DateTime(2026, 6, 12, 9, 30, 0));
+		Schedule("Dongwon weekend Friday", 2, "20260627", new DateTime(2026, 6, 12, 10, 0, 0));
 
 		var unknown = new bookInfo(3, "NA", 0, "20260623", 900, 1000, 900);
 		Expect("Yeoju has no assumed schedule", !SunValleySchedule.TryGetSingleCheckTime(unknown, out _, out _), "");
 
-		DateTime at = new DateTime(2026, 6, 8, 9, 1, 0);
+		DateTime at = new DateTime(2026, 6, 8, 9, 0, 0);
 		Expect("before check time waits", SunValleySchedule.WaitRequired(at.AddSeconds(-1), at), "");
 		Expect("at check time proceeds immediately", !SunValleySchedule.WaitRequired(at, at), "");
 		Expect("after check time proceeds immediately", !SunValleySchedule.WaitRequired(at.AddMinutes(5), at), "");
@@ -158,6 +232,13 @@ internal static class Program
 		Nearest("skips unparseable rows", L("javascript:noop()", Row("0903", "설악"), "bad,,,"), 900, "설악", "09:03", 3);
 		NearestNull("no eligible row (starter mismatch)", L(Row("0900", "썬"), Row("0930", "밸리")), 900, "설악");
 		NearestNull("empty list", L(), 900, "NA");
+
+		var retryReq = new bookInfo(0, "NA", 0, "20260521", 0, 2359, 900);
+		var rejected = new HashSet<string> { "08:50" };
+		var retrySlot = TeeSelector.PickNearest(L(Row("0850", "NA"), Row("0905", "NA")), retryReq,
+			rejected, delegate { }, out string retryTime, out int retryDelta);
+		Expect("concurrent retry skips rejected tee", retrySlot != null && retryTime == "09:05" && retryDelta == 5,
+			"chosen=" + (retryTime ?? "null") + " delta=" + retryDelta);
 
 		// desiredTime fallback: when desired==0 the ctor falls back to startTime
 		var reqFallback = new bookInfo(0, "NA", 0, "20260521", 930, 2359, 0);

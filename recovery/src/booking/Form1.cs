@@ -107,8 +107,6 @@ public class Form1 : Form
 
 	private CheckBox chkSaveCred;   // "계정 저장" (DPAPI). default ON.
 
-	private CheckBox chkAutoRun;    // "Windows 로그인 후 자동 실행" (HKCU\...\Run). default OFF.
-
 	private Task<bool>[] ts;
 
 	private CancellationTokenSource[] cts;
@@ -126,6 +124,8 @@ public class Form1 : Form
 
 	private bool gotStart = true;
 
+	private bool parallelReservations;
+
 	private Tuple<string, string> idPwdStartup;
 
 	private bool noEventHandler;
@@ -134,14 +134,9 @@ public class Form1 : Form
 
 	private readonly bool qaAutoStart;
 
-	// true when launched by the HKCU\...\Run entry ("booking.exe --auto-run"):
-	// load the saved settings, run headless if valid, otherwise exit without a browser.
-	private readonly bool autoRun;
-
-	public Form1(bool qaAutoStart = false, bool autoRun = false)
+	public Form1(bool qaAutoStart = false)
 	{
 		this.qaAutoStart = qaAutoStart;
-		this.autoRun = autoRun;
 		InitializeComponent();
 		setDefine();
 		coreData = new CoreData(releaseVersion);
@@ -168,7 +163,7 @@ public class Form1 : Form
 		expire = false;
 	}
 
-	private club initClass(ChromeDriver drv, int threadIndex)
+	private club initClass(ChromeDriver drv, int threadIndex, string accountId = null, string accountPassword = null, List<bookInfo> requests = null)
 	{
 		club club2 = null;
 		Trace.WriteLine("initClass");
@@ -257,7 +252,12 @@ public class Form1 : Form
 			club2 = new balios(managerId);
 		}
 		Trace.WriteLine("Init2");
-		club2.setValues(drv, threadIndex, coreData, bookList, ref workPool);
+		club2.setValues(drv, threadIndex, coreData, requests ?? bookList, ref workPool);
+		if (accountId != null)
+		{
+			club2.id = accountId;
+			club2.pwd = accountPassword ?? "";
+		}
 		return club2;
 	}
 
@@ -276,7 +276,6 @@ public class Form1 : Form
 		LoadAccountsToUi();
 		chkSaveCred.Checked = coreData.credentialLoaded
 			|| (string.IsNullOrEmpty(idTb.Text) && string.IsNullOrEmpty(pwdTb.Text));
-		chkAutoRun.Checked = AutoRun.IsEnabled();
 		if (coreData.credentialLoaded)
 		{
 			logtxtBox("저장된 계정 정보를 불러왔습니다.");
@@ -285,14 +284,6 @@ public class Form1 : Form
 		if (qaAutoStart)
 		{
 			BeginInvoke(new Action(RunQaAutoStart));
-		}
-		else if (autoRun)
-		{
-			// 숨김 대기·실행: 창을 표시하지 않고 저장된 설정으로 자동 Start.
-			ShowInTaskbar = false;
-			WindowState = FormWindowState.Minimized;
-			Visible = false;
-			BeginInvoke(new Action(RunAutoRun));
 		}
 	}
 
@@ -324,56 +315,6 @@ public class Form1 : Form
 #else
 		logtxtBox("QA AUTO-START REFUSED: this is not a DIAGNOSTIC_BUILD.");
 #endif
-	}
-
-	// Launched via the HKCU\...\Run entry ("booking.exe --auto-run").
-	// Uses ONLY the already-saved conditions + the DPAPI account store (loaded by
-	// configLoad / LoadAccountsToUi / PrefillFromConfig during Form1_Load). If any
-	// required value is missing or validation fails, no browser is opened and the
-	// process exits. No credential value is ever taken from the command line or the
-	// registry. Manual (non --auto-run) launches are unaffected.
-	// This only runs after Windows has booted and this user has logged in; killing
-	// the app / process stops it with no automatic restart.
-	private void RunAutoRun()
-	{
-		suppressStartDialogs = true; // 무인 실행: 모달 대화상자 금지
-		headless = true;
-
-		CredentialStore.AccountData acc = ReadAccountsFromUi();
-		int s1 = acc.Res1Slot;
-		if (string.IsNullOrWhiteSpace(acc.Id[s1]) || string.IsNullOrEmpty(acc.Pw[s1]))
-		{
-			logtxtBox("AUTO-RUN 중단: 예약 1 계정 정보가 저장되어 있지 않습니다. 브라우저를 열지 않습니다.");
-			Trace.WriteLine("AUTO-RUN aborted: reservation 1 account not stored.");
-			Close();
-			return;
-		}
-		if (chkR2.Checked && (string.IsNullOrWhiteSpace(acc.Id[acc.Res2Slot]) || string.IsNullOrEmpty(acc.Pw[acc.Res2Slot])))
-		{
-			logtxtBox("AUTO-RUN 중단: 예약 2 계정 정보가 저장되어 있지 않습니다. 브라우저를 열지 않습니다.");
-			Trace.WriteLine("AUTO-RUN aborted: reservation 2 account not stored.");
-			Close();
-			return;
-		}
-		if (string.IsNullOrWhiteSpace(coreData.condition1) || ParseCondition(ConditionString(1)) == null)
-		{
-			logtxtBox("AUTO-RUN 중단: 유효한 예약 1 조건이 저장되어 있지 않습니다. 브라우저를 열지 않습니다.");
-			Trace.WriteLine("AUTO-RUN aborted: reservation 1 condition missing/invalid.");
-			Close();
-			return;
-		}
-		string vErr = ValidateStart();
-		if (vErr != null)
-		{
-			logtxtBox("AUTO-RUN 중단: " + vErr + " 브라우저를 열지 않습니다.");
-			Trace.WriteLine("AUTO-RUN aborted: " + vErr);
-			Close();
-			return;
-		}
-
-		logtxtBox("AUTO-RUN: 저장된 설정으로 숨김 실행합니다.");
-		Trace.WriteLine("AUTO-RUN: starting headless from saved settings.");
-		setUIStart(qaNoCredentialWrite: true); // 계정/조건은 이미 저장본 → 재저장 안 함
 	}
 
 	private void ApplyDefaultIdPwd(bool applyPassword, bool forceDefaultId)
@@ -507,29 +448,9 @@ public class Form1 : Form
 				coreData.clearPassword();
 			}
 			SaveConditions();
-
-			// Windows 로그인 후 자동 실행: 체크 시 HKCU\...\Run 등록, 해제 시 제거.
-			// 레지스트리에는 exe 경로 + "--auto-run" 만 기록 (자격정보 없음).
-			try
-			{
-				if (chkAutoRun.Checked)
-				{
-					AutoRun.Enable(Application.ExecutablePath);
-				}
-				else
-				{
-					AutoRun.Disable();
-				}
-			}
-			catch (Exception ex)
-			{
-				logtxtBox("자동 실행 설정 반영 실패: " + ex.Message);
-			}
-
 			logtxtBox("저장: [예약1] " + ConditionString(1) + " (계정 " + (acc.Res1Slot + 1) + ")"
 				+ "   [예약2] " + (chkR2.Checked ? (ConditionString(2) + " (계정 " + (acc.Res2Slot + 1) + ")") : "(미사용)")
-				+ "   계정 저장=" + chkSaveCred.Checked
-				+ "   Windows 자동 실행=" + chkAutoRun.Checked);
+				+ "   계정 저장=" + chkSaveCred.Checked);
 		}
 	}
 
@@ -681,8 +602,11 @@ public class Form1 : Form
 		Trace.WriteLine("QA AUTO-START: Reservation 1 configuration accepted; initializing ChromeDriver.");
 		workPool = new dayPool(releaseVersion, bookList.Count);
 
-		// 순차 정책 -> 브라우저/워커 1개
-		coreData.threadNum = 1;
+		parallelReservations = ReservationExecutionPolicy.UseParallelSessions(bookList.Count == 2, coreData.accounts);
+		coreData.threadNum = parallelReservations ? 2 : 1;
+		logtxtBox(parallelReservations
+			? "예약 1·2의 계정 ID가 달라 분리된 크롬 창 2개로 동시 실행합니다."
+			: "같은 계정이거나 예약이 하나여서 크롬 창 1개로 순차 실행합니다.");
 		driver = (ChromeDriver[])(object)new ChromeDriver[coreData.threadNum];
 		DisableIncompatibleLocalChromeDriver();
 		string directoryName = Path.GetDirectoryName(EnsureChromeDriverReadyInteractive());
@@ -711,11 +635,12 @@ public class Form1 : Form
 		WebDriverExtensions.delay1 = coreData.lockDelay;
 		WebDriverExtensions.frm = this;
 		ts = new Task<bool>[coreData.threadNum];
+		Func<object, bool> worker = parallelReservations ? bookOneInDedicatedSession : bookMain;
 		for (int k = 0; k < ts.Length; k++)
 		{
-			ts[k] = new Task<bool>(bookMain, k, cts[k].Token);
+			ts[k] = new Task<bool>(worker, k, cts[k].Token);
 			ts[k].Start();
-			Thread.Sleep(100);
+			Thread.Sleep(1);
 		}
 		logtxtBox("Initialization Done");
 		return true;
@@ -900,6 +825,47 @@ public class Form1 : Form
 	//   예약 1의 마감/오픈전/시간없음/진단 no-submit은 예약 2를 막지 않는다.
 	//   브라우저·페이지 이동 오류일 때만 공유 세션이 신뢰할 수 없으므로 예약 2를 중단한다.
 	// ---------------------------------------------------------------------------
+	private bool bookOneInDedicatedSession(object index)
+	{
+		int reservationIndex = (int)index;
+		ChromeDriver val = driver[reservationIndex];
+		if (reservationIndex < 0 || reservationIndex >= bookList.Count)
+		{
+			SafeQuit(val);
+			return false;
+		}
+
+		int slot = reservationIndex == 0
+			? coreData.accounts.ClampSlot(coreData.accounts.Res1Slot)
+			: coreData.accounts.ClampSlot(coreData.accounts.Res2Slot);
+		string accountId = coreData.accounts.Id[slot] ?? "";
+		string accountPassword = coreData.accounts.Pw[slot] ?? "";
+		club client;
+		try
+		{
+			client = initClass(val, reservationIndex, accountId, accountPassword);
+			logtxtBox("Parallel reservation " + (reservationIndex + 1) + " login start (isolated browser session).");
+			if (!client.login(this))
+			{
+				logtxtBox("Parallel reservation " + (reservationIndex + 1) + " login failed.");
+				SafeQuit(val);
+				return false;
+			}
+			logtxtBox("========== Parallel reservation " + (reservationIndex + 1) + " ========== " + bookList[reservationIndex]);
+			BookOutcome outcome = client.bookRequest(bookList[reservationIndex]);
+			logtxtBox(DescribeOutcome(reservationIndex + 1, outcome));
+			logtxtBox("Parallel reservation " + (reservationIndex + 1) + " complete: " + outcome.GateReason(client.diagnosticMode));
+			SafeQuit(val);
+			return !IsInfrastructureError(outcome);
+		}
+		catch (Exception ex)
+		{
+			logtxtBox("Parallel reservation " + (reservationIndex + 1) + " failed: " + ex.Message);
+			SafeQuit(val);
+			return false;
+		}
+	}
+
 	private bool bookMain(object index)
 	{
 		int num = (int)index;
@@ -926,79 +892,117 @@ public class Form1 : Form
 			return false;
 		}
 
-		if (bookList.Count == 0)
-		{
-			logtxtBox("No conditions configured. RUN TERMINATED.");
-			SafeQuit(val);
-			return false;
-		}
-
-		logtxtBox("========== 예약 1 ==========  " + bookList[0]);
-		BookOutcome o1 = client.bookRequest(bookList[0]);
-		logtxtBox(DescribeOutcome(1, o1));
-		logtxtBox(SequentialGate.Decision(o1, client.diagnosticMode));
-		if (!SequentialGate.ShouldRunCondition2(o1))
-		{
-			logtxtBox("==> 예약 2 건너뜀. 실행 종료 (예약 1 브라우저/페이지 오류).");
-			logtxtBox(SummarizeRun(o1, null, null));
-			SafeQuit(val);
-			return false;
-		}
-
-		if (bookList.Count < 2 || stopClicked)
-		{
-			logtxtBox("예약 2 없음. 실행 완료.");
-			logtxtBox(SummarizeRun(o1, null, stopClicked ? "사용자가 실행을 중지함" : null));
-			SafeQuit(val);
-			return true;
-		}
-
+		// bookMain runs unobserved on a background Task (no .Wait()/.Result anywhere) and
+		// this is the SHARED-session path (same account, or a single reservation) used
+		// whenever a run does not qualify for isolated parallel sessions. Everything from
+		// here on must not let an exception escape uncaught: an unobserved Task exception
+		// is swallowed by the runtime, so the run would otherwise just silently stop with
+		// no log line, no summary and no SafeQuit - the ChromeDriver window is left open
+		// and the operator has no idea what happened.
+		BookOutcome o1 = null;
+		BookOutcome o2 = null;
+		bool reservation2Preloaded = false;
 		try
 		{
-			((IWebDriver)(object)val).SwitchTo().NewWindow(WindowType.Tab);
-			logtxtBox("예약 2: 새 탭에서 진행");
-		}
-		catch (Exception)
-		{
-		}
-
-		// The two tabs share browser cookies.  Reuse a same-account session; otherwise
-		// explicitly leave it and verify a fresh login form before signing in.
-		int r1slot = coreData.accounts.ClampSlot(coreData.accounts.Res1Slot);
-		int r2slot = coreData.accounts.ClampSlot(coreData.accounts.Res2Slot);
-		bool sameAccount = r1slot == r2slot;
-		if (!client.prepareReservation2Session(this, sameAccount))
-		{
-			logtxtBox("예약 2 세션 전환 실패. 실행 종료.");
-			logtxtBox(SummarizeRun(o1, null, "예약 2 세션 전환 실패"));
-			SafeQuit(val);
-			return false;
-		}
-		if (!sameAccount)
-		{
-			coreData.applyAccount(r2slot);
-			client.id = coreData.userId;
-			client.pwd = coreData.passwd;
-			logtxtBox("예약 2 계정 " + (r2slot + 1) + " 로 로그인");
-			if (!client.login(this))
+			if (bookList.Count == 0)
 			{
-				logtxtBox("예약 2 로그인 실패. 실행 종료.");
-				logtxtBox(SummarizeRun(o1, null, "예약 2 로그인 실패"));
+				logtxtBox("No conditions configured. RUN TERMINATED.");
 				SafeQuit(val);
 				return false;
 			}
-		}
 
-		logtxtBox("========== 예약 2 ==========  " + bookList[1]);
-		BookOutcome o2 = client.bookRequest(bookList[1]);
-		logtxtBox(DescribeOutcome(2, o2));
-		logtxtBox(o2.GateSatisfied
-			? ("예약 2 확정 (confirmationId=" + o2.ConfirmationId + ").")
-			: ("예약 2 미확정: " + o2.GateReason(client.diagnosticMode) + "."));
-		logtxtBox(SummarizeRun(o1, o2, null));
-		logtxtBox("실행 완료.");
-		SafeQuit(val);
-		return true;
+			bool sameAccountRun = bookList.Count > 1 &&
+				!ReservationExecutionPolicy.UseParallelSessions(true, coreData.accounts);
+			if (sameAccountRun)
+			{
+				reservation2Preloaded = client.preloadReservationPage(bookList[1]);
+			}
+
+			logtxtBox("========== 예약 1 ==========  " + bookList[0]);
+			// A shared account cannot safely submit two reservations concurrently, but
+			// it can begin reservation 2 immediately after reservation 1 is accepted.
+			// Defer only the slow history-page check; it is completed after reservation 2.
+			bool accelerateReservation2 = bookList.Count > 1;
+			o1 = client.bookRequest(bookList[0], accelerateReservation2);
+			logtxtBox(DescribeOutcome(1, o1));
+			logtxtBox(SequentialGate.Decision(o1, client.diagnosticMode));
+			if (!SequentialGate.ShouldRunCondition2(o1))
+			{
+				logtxtBox("==> 예약 2 건너뜀. 실행 종료 (예약 1 브라우저/페이지 오류).");
+				logtxtBox(SummarizeRun(o1, null, null));
+				SafeQuit(val);
+				return false;
+			}
+
+			if (bookList.Count < 2 || stopClicked)
+			{
+				logtxtBox("예약 2 없음. 실행 완료.");
+				logtxtBox(SummarizeRun(o1, null, stopClicked ? "사용자가 실행을 중지함" : null));
+				SafeQuit(val);
+				return true;
+			}
+
+			try
+			{
+				if (!reservation2Preloaded)
+				{
+					((IWebDriver)(object)val).SwitchTo().NewWindow(WindowType.Tab);
+					logtxtBox("예약 2: 새 탭에서 진행");
+				}
+			}
+			catch (Exception)
+			{
+			}
+
+			// The two tabs share browser cookies.  Reuse a same-account session; otherwise
+			// explicitly leave it and verify a fresh login form before signing in.
+			int r2slot = coreData.accounts.ClampSlot(coreData.accounts.Res2Slot);
+			bool sameAccount = !ReservationExecutionPolicy.UseParallelSessions(true, coreData.accounts);
+			if (!client.prepareReservation2Session(this, sameAccount))
+			{
+				logtxtBox("예약 2 세션 전환 실패. 실행 종료.");
+				logtxtBox(SummarizeRun(o1, null, "예약 2 세션 전환 실패"));
+				SafeQuit(val);
+				return false;
+			}
+			if (!sameAccount)
+			{
+				coreData.applyAccount(r2slot);
+				client.id = coreData.userId;
+				client.pwd = coreData.passwd;
+				logtxtBox("예약 2 계정 " + (r2slot + 1) + " 로 로그인");
+				if (!client.login(this))
+				{
+					logtxtBox("예약 2 로그인 실패. 실행 종료.");
+					logtxtBox(SummarizeRun(o1, null, "예약 2 로그인 실패"));
+					SafeQuit(val);
+					return false;
+				}
+			}
+
+			logtxtBox("========== 예약 2 ==========  " + bookList[1]);
+			o2 = client.bookRequest(bookList[1]);
+			logtxtBox(DescribeOutcome(2, o2));
+			if (accelerateReservation2)
+			{
+				client.completeDeferredVerification(o1, bookList[0]);
+				logtxtBox(DescribeOutcome(1, o1));
+			}
+			logtxtBox(o2.GateSatisfied
+				? ("예약 2 확정 (confirmationId=" + o2.ConfirmationId + ").")
+				: ("예약 2 미확정: " + o2.GateReason(client.diagnosticMode) + "."));
+			logtxtBox(SummarizeRun(o1, o2, null));
+			logtxtBox("실행 완료.");
+			SafeQuit(val);
+			return true;
+		}
+		catch (Exception ex)
+		{
+			logtxtBox("bookMain 예약 처리 중 예상치 못한 오류: " + ex.GetType().Name + " - " + ex.Message);
+			logtxtBox(SummarizeRun(o1, o2, "예상치 못한 오류: " + ex.Message));
+			SafeQuit(val);
+			return false;
+		}
 	}
 
 	private static string DescribeOutcome(int n, BookOutcome o)
@@ -1101,7 +1105,7 @@ public class Form1 : Form
 		// 겹침 방지: 예약 1 / 예약 2 블록 행에 충분한 높이 확보
 		tableLayoutPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 70f));   // 0 buttons
 		tableLayoutPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 280f));  // 1 예약 1 block (제목+희망 시간+골프장/날짜)
-		tableLayoutPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 140f));  // 2 account (계정 1 / 계정 2 + 계정 저장 + 자동 실행 체크가 안 잘리게)
+		tableLayoutPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 116f));  // 2 account (계정 1 / 계정 2 + 저장 체크가 안 잘리게)
 		tableLayoutPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 290f));  // 3 예약 2 block
 		tableLayoutPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 70f));   // 4 저장
 		for (int i = 0; i < 3; i++)
@@ -1130,13 +1134,11 @@ public class Form1 : Form
 				coreData.clearPassword();
 			}
 		};
-		chkAutoRun = new CheckBox { Text = "Windows 로그인 후 자동 실행", AutoSize = true, Checked = false };
 
 		FlowLayoutPanel acctCell = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoSize = true };
 		acctCell.Controls.Add(AcctRow("계정 1", idTb, pwdTb));
 		acctCell.Controls.Add(AcctRow("계정 2", acct2IdTb, acct2PwTb));
 		acctCell.Controls.Add(chkSaveCred);
-		acctCell.Controls.Add(chkAutoRun);
 		coreData.setFonts(acctCell.Controls, 10);
 
 		acctCbo1 = MakeAcctCombo();
